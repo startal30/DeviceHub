@@ -511,9 +511,25 @@ class SurroundNoPromptTests(unittest.TestCase):
         with self.assertRaises(FX.FxError):
             FX._surround_values("stereo", 9)
 
-    def test_bluevoice_never_uses_the_no_prompt_path(self):
-        self.assertFalse(FX.write_without_prompt("bluevoice", 1))
-        self.assertFalse(FX.write_without_prompt("voice", 1))
+    def test_bluevoice_goes_through_policy_config_without_prompt(self):
+        from devices import win_policy
+        writes = []
+        orig = (FX.endpoint_id, win_policy.set_values)
+        FX.endpoint_id = lambda kind: "{0.0.1.00000000}.{mic}"
+        win_policy.set_values = lambda dev, values, fx=False: writes.append((dev, values))
+        try:
+            self.assertTrue(FX.write_without_prompt("bluevoice", 1))
+            self.assertEqual(writes[-1], ("{0.0.1.00000000}.{mic}",
+                                          [(FX.PK_BLUEVOICE_FMTID, 1, win_policy.VT_I4, 1)]))
+            self.assertTrue(FX.write_without_prompt("voice", FX.voice_values(BROADCASTER)))
+            self.assertEqual(len(writes[-1][1]), 40)
+            self.assertTrue(all(vt == win_policy.VT_R4 for _f, _p, vt, _v in writes[-1][1]))
+            with self.assertRaises(FX.FxError):                  # validated before anything is written
+                FX.write_without_prompt("voice", {101: 70.0})
+            win_policy.set_values = lambda dev, values, fx=False: (_ for _ in ()).throw(OSError("denied"))
+            self.assertFalse(FX.write_without_prompt("bluevoice", 0))   # -> falls back to the prompt
+        finally:
+            FX.endpoint_id, win_policy.set_values = orig
 
 
 # Part of a user's G HUB preset (a copy of Broadcaster 1) and the mic values G HUB wrote for it (real PRO X 2).
@@ -574,6 +590,47 @@ class VoicePresetTests(unittest.TestCase):
         mic[902] = 11.0
         self.assertIsNone(FX.match_voice_preset(mic, presets))
         self.assertIsNone(FX.match_voice_preset({}, presets))
+
+    def test_setup_constants_complete_the_set(self):
+        # G HUB's Blue VO!CE set has 68 properties: the switch, 27 fixed values and 40 preset values.
+        self.assertEqual(len(FX.VOICE_CONSTANTS), 27)
+        self.assertFalse(set(FX.VOICE_CONSTANTS) & FX.VOICE_PIDS)
+        self.assertNotIn(1, FX.VOICE_CONSTANTS)
+        self.assertEqual(1 + len(FX.VOICE_CONSTANTS) + len(FX.VOICE_PIDS), 68)
+
+    def test_setup_argument_roundtrip_and_validation(self):
+        v = {"surround": 1, "room": 1, "stereo": 0, "bluevoice": 1, "voice": FX.voice_values(BROADCASTER)}
+        arg = FX.helper_arg("setup", v)
+        self.assertTrue(arg.startswith("setup=1,1,0,1/3:0.0,101:70.0,"))
+        self.assertEqual(FX._decode_setup(arg.split("=", 1)[1]), v)
+        surround_only = {"surround": 0, "room": 2, "stereo": 3}
+        self.assertEqual(FX._decode_setup(FX._encode_setup(surround_only)), surround_only)
+        for bad in ("1,9,0", "2,1,0", "1,1,0,1", "1,1,0/3:1.0", "x"):
+            self.assertEqual(FX.run_helper("setup=" + bad), 2, bad)
+
+    def test_windows_sonic_writes_what_settings_writes(self):
+        from devices import win_policy, win_spatial as S
+        writes, state = [], {"on": False}
+        orig = (win_policy.set_values, S.is_on)
+        win_policy.set_values = lambda dev, values, fx=False: (writes.append(values),
+                                                               state.update(on=values[2][3] != bytes(24)))
+        S.is_on = lambda dev: state["on"]
+        try:
+            S.set_sonic("{0.0.0.00000000}.{x}", True)
+            keys = [(f, p) for f, p, _vt, _v in writes[-1]]
+            self.assertEqual(keys, [S.K_ENCODER, S.K_SETTINGS, S.K_SELECTED, S.K_SIGNAL])   # signal last
+            self.assertEqual(writes[-1][-1][2:], (win_policy.VT_I2, 0))
+            self.assertEqual([len(v) for _f, _p, _vt, v in writes[-1][:3]], [146, 76, 24])
+            self.assertEqual(writes[-1][2][3][8:], S._SONIC_GUID_BYTES)
+            from comtypes import GUID
+            self.assertEqual(bytes(GUID(S.SONIC)), S._SONIC_GUID_BYTES)
+            S.set_sonic("{0.0.0.00000000}.{x}", False)
+            self.assertEqual(writes[-1][2][3], bytes(24))
+            S.is_on = lambda dev: True                        # Windows didn't take it -> error
+            with self.assertRaises(S.SpatialError):
+                S.set_sonic("{0.0.0.00000000}.{x}", False, timeout_s=0.3)
+        finally:
+            win_policy.set_values, S.is_on = orig
 
     def test_import_from_ghub(self):
         doc = {"cards": [

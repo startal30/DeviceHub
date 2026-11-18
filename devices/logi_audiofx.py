@@ -16,8 +16,11 @@ each switch is flipped (on a real PRO X 2, G HUB 2026.7):
              two different presets, all 40 matched the preset's values, nothing else in the set
              changed, and a field missing from a preset was written as 0. The preset's "inputGain"
              is never written by G HUB, so it isn't here either.
-Reading needs no special rights. Writing needs administrator rights (both the HKLM key and endpoint
-property stores are admin-only), so writes go through apply_elevated(), which shows a UAC prompt.
+Reading needs no special rights. Blue VO!CE writes go through Windows' IPolicyConfig (devices/win_policy.py,
+the interface Windows' Sound settings use), which needs no administrator rights. The surround key is in
+HKLM, so creating it needs administrator rights, and changing it does too unless
+tools/allow-surround-without-prompt.ps1 was run. Anything that can't be done without a prompt goes
+through apply_elevated(), which shows a UAC prompt and writes the endpoint property store directly.
 No Logitech or DTS code is copied: Device Hub only flips the same switches G HUB does.
 """
 from __future__ import annotations
@@ -61,6 +64,16 @@ VOICE_FIELDS = {
     "hardLimiter.attack": 900, "hardLimiter.release": 901, "hardLimiter.boost": 902,
 }
 VOICE_PIDS = frozenset(VOICE_FIELDS.values())
+
+# The rest of the Blue VO!CE set that G HUB writes besides the on/off switch (#1) and a preset: identical
+# in all 7 recordings (before G HUB was opened, and with different presets / on / off), so they're its
+# fixed setup values. int = VT_I4, float = VT_R4.
+VOICE_CONSTANTS = {
+    2: 1, 103: 1, 205: 1, 312: 1, 313: 1, 314: 1, 414: 1, 507: 1, 513: 1, 613: 1, 704: 0, 804: 0, 904: 1,
+    1009: 0, 1108: 0,
+    701: 1.0, 702: 1.0, 800: 0.7, 802: 400.0, 1000: 0.5, 1002: 450.0, 1003: 0.45, 1007: 0.5,
+    1103: 400.0, 1104: 400.0, 1105: 0.2, 1106: 0.5,
+}
 
 
 class FxError(Exception):
@@ -139,9 +152,19 @@ def _get_floats(dev_id: str, fmtid: str, pids) -> dict[int, float]:
 
 
 def _set_floats(dev_id: str, fmtid: str, values: dict[int, float]):
+    _set_props(dev_id, fmtid, {}, values)
+
+
+def _set_props(dev_id: str, fmtid: str, ints: dict[int, int], floats: dict[int, float]):
+    """Write VT_I4 and VT_R4 properties in one go."""
     from pycaw.api.mmdeviceapi.depend import PROPVARIANT
     store = _store(dev_id, True)
-    for pid, v in sorted(values.items()):
+    for pid, v in sorted(ints.items()):
+        pv = PROPVARIANT()
+        pv.vt = 3                                           # VT_I4
+        pv.union.lVal = int(v)
+        store.SetValue(ctypes.byref(_key(fmtid, pid)), ctypes.byref(pv))
+    for pid, v in sorted(floats.items()):
         pv = PROPVARIANT()
         pv.vt = 4                                           # VT_R4
         pv.union.lVal = _f32_to_bits(v)
@@ -250,7 +273,105 @@ def effects_installed() -> dict:
     return found
 
 
+def setup_needed() -> list[str]:
+    """Effects that are attached to the PRO X 2 but have no settings on its current audio endpoints.
+    Happens when Windows gives the headset new endpoints (e.g. after its audio driver is reinstalled):
+    G HUB's settings stay with the old endpoints, and the effects then run without them."""
+    need = []
+    attached = effects_installed()
+    spk = endpoint_id("Speakers")
+    if spk and "surround" in attached:
+        try:
+            winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, GHUB_KEY + "\\" + spk).Close()
+        except OSError:
+            need.append("surround")
+    mic = endpoint_id("Microphone")
+    if mic and "bluevoice" in attached and _get_int(mic, PK_BLUEVOICE_FMTID, PK_BLUEVOICE_PID) is None:
+        need.append("bluevoice")
+    return need
+
+
+def previous_surround() -> dict | None:
+    """Surround settings of the most recently changed G HUB endpoint key (the headset's previous
+    endpoint), as {'surround', 'room', 'stereo'}; None if there is none."""
+    try:
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, GHUB_KEY)
+    except OSError:
+        return None
+    best = None
+    with root:
+        for i in range(winreg.QueryInfoKey(root)[0]):
+            name = winreg.EnumKey(root, i)
+            try:
+                with winreg.OpenKey(root, name) as k:
+                    changed = winreg.QueryInfoKey(k)[2]
+                    vals = {"surround": int(winreg.QueryValueEx(k, "DTSon")[0])}
+                    for reg, field in (("DTSroomModel", "room"), ("DTSstereoModel", "stereo")):
+                        try:
+                            vals[field] = int(winreg.QueryValueEx(k, reg)[0])
+                        except OSError:
+                            pass
+            except OSError:
+                continue
+            if best is None or changed > best[0]:
+                best = (changed, vals)
+    return best[1] if best else None
+
+
 # ---------------------------------------------------------------------------------------------- write (admin)
+
+def _check_setup(value: dict) -> dict:
+    """{'surround': 0/1, 'room', 'stereo', 'bluevoice': 0/1 or None, 'voice': {pid: value} or None}"""
+    v = dict(value)
+    if int(v.get("surround", 0)) not in (0, 1) or int(v.get("room", 1)) not in ROOM_MODELS \
+            or int(v.get("stereo", 0)) not in STEREO_MODELS:
+        raise FxError("bad surround setup")
+    if v.get("voice") is not None:
+        v["voice"] = _check_voice(v["voice"])
+        if int(v.get("bluevoice", 0)) not in (0, 1):
+            raise FxError("bad Blue VO!CE setup")
+    return v
+
+
+def _encode_setup(value: dict) -> str:
+    v = _check_setup(value)
+    head = f"{int(v.get('surround', 0))},{int(v.get('room', 1))},{int(v.get('stereo', 0))}"
+    if v.get("voice") is None:
+        return head
+    return f"{head},{int(v['bluevoice'])}/{_encode_voice(v['voice'])}"
+
+
+def _decode_setup(text: str) -> dict:
+    head, _, voice = text.partition("/")
+    nums = [int(x) for x in head.split(",")]
+    if len(nums) not in (3, 4) or (len(nums) == 4) != bool(voice):
+        raise FxError("bad setup")
+    v = {"surround": nums[0], "room": nums[1], "stereo": nums[2]}
+    if voice:
+        v.update(bluevoice=nums[3], voice=_decode_voice(voice))
+    return _check_setup(v)
+
+
+def _write_setup(value: dict):
+    """Give the current endpoints the settings G HUB would: surround key + Blue VO!CE set."""
+    v = _check_setup(value)
+    spk = endpoint_id("Speakers")
+    if spk:
+        with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, GHUB_KEY + "\\" + spk, 0,
+                                winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+            for reg_name, val in {**_surround_values("surround", v.get("surround", 0)),
+                                  **_surround_values("room", v.get("room", 1)),
+                                  **_surround_values("stereo", v.get("stereo", 0))}.items():
+                winreg.SetValueEx(k, reg_name, 0, winreg.REG_DWORD, val)
+        _set_int(spk, PK_SURROUND_FMTID, PK_SURROUND_PID, 0)
+    mic = endpoint_id("Microphone")
+    if mic and v.get("voice") is not None:
+        ints = {p: x for p, x in VOICE_CONSTANTS.items() if isinstance(x, int)}
+        ints[PK_BLUEVOICE_PID] = int(v["bluevoice"])
+        floats = {p: x for p, x in VOICE_CONSTANTS.items() if isinstance(x, float)}
+        floats.update(v["voice"])
+        _set_props(mic, PK_BLUEVOICE_FMTID, ints, floats)
+
 
 def _write(name: str, value: int):
     if name == "surround":
@@ -277,6 +398,8 @@ def _write(name: str, value: int):
         if not mic:
             raise FxError("PRO X 2 microphone not found")
         _set_int(mic, PK_BLUEVOICE_FMTID, PK_BLUEVOICE_PID, 1 if value else 0)
+    elif name == "setup":
+        _write_setup(value)
     elif name == "voice":                                   # value = {property id: value}, a whole preset
         mic = endpoint_id("Microphone")
         if not mic:
@@ -311,10 +434,45 @@ def surround_writable() -> bool:
         return False
 
 
-def write_without_prompt(name: str, value: int) -> bool:
-    """Surround settings with a plain registry write. The DTS effect watches its key and applies changes
-    live (verified on a real PRO X 2: Super Stereo Wide -> Off was audible immediately, no notify write).
-    Returns False if this account isn't allowed to write the key (then use apply_elevated)."""
+def _mic_policy_writes(ints: dict[int, int], floats: dict[int, float]):
+    """Blue VO!CE properties through Windows' IPolicyConfig: no administrator rights needed."""
+    from devices import win_policy
+    mic = endpoint_id("Microphone")
+    if not mic:
+        raise FxError("PRO X 2 microphone not found")
+    writes = [(PK_BLUEVOICE_FMTID, p, win_policy.VT_I4, int(v)) for p, v in sorted(ints.items())]
+    writes += [(PK_BLUEVOICE_FMTID, p, win_policy.VT_R4, float(v)) for p, v in sorted(floats.items())]
+    win_policy.set_values(mic, writes)
+
+
+def write_without_prompt(name: str, value) -> bool:
+    """Apply a setting without a permission prompt when possible; False means use apply_elevated.
+    - Blue VO!CE (switch, presets, setup of the mic): through IPolicyConfig, the interface Windows'
+      own Sound settings use, which needs no administrator rights.
+    - Surround: a plain registry write. The DTS effect watches its key and applies changes live
+      (verified on a real PRO X 2: Super Stereo Wide -> Off was audible immediately, no notify write).
+      Possible only after tools/allow-surround-without-prompt.ps1 gave this account write access."""
+    try:
+        if name == "bluevoice":
+            _mic_policy_writes({PK_BLUEVOICE_PID: 1 if value else 0}, {})
+            return True
+        if name == "voice":
+            _mic_policy_writes({}, _check_voice(value))
+            return True
+        if name == "setup":
+            v = _check_setup(value)
+            if v.get("voice") is not None:
+                ints = {p: x for p, x in VOICE_CONSTANTS.items() if isinstance(x, int)}
+                ints[PK_BLUEVOICE_PID] = int(v["bluevoice"])
+                floats = {p: x for p, x in VOICE_CONSTANTS.items() if isinstance(x, float)}
+                floats.update(v["voice"])
+                _mic_policy_writes(ints, floats)
+            # The surround part creates a key under HKLM, which needs administrator rights.
+            return "surround" not in setup_needed()
+    except FxError:
+        raise
+    except Exception:
+        return False
     if name not in SURROUND_VALUES:
         return False
     spk = endpoint_id("Speakers")
@@ -327,8 +485,8 @@ def write_without_prompt(name: str, value: int) -> bool:
             for reg_name, v in values.items():
                 winreg.SetValueEx(k, reg_name, 0, winreg.REG_DWORD, v)
         return True
-    except PermissionError:
-        return False
+    except OSError:            # no write access, or the key is gone (e.g. G HUB uninstalled): the
+        return False           # elevated path creates it
 
 
 def is_admin() -> bool:
@@ -340,7 +498,11 @@ def is_admin() -> bool:
 
 def helper_arg(name: str, value) -> str:
     """The NAME=VALUE argument for the elevated helper. A Blue VO!CE preset goes as 'voice=pid:value,...'."""
-    return f"voice={_encode_voice(value)}" if name == "voice" else f"{name}={int(value)}"
+    if name == "voice":
+        return f"voice={_encode_voice(value)}"
+    if name == "setup":
+        return f"setup={_encode_setup(value)}"
+    return f"{name}={int(value)}"
 
 
 def apply_elevated(name: str, value, timeout_ms: int = 60_000):
@@ -382,7 +544,8 @@ def run_helper(arg: str) -> int:
     """Entry point for the elevated helper: '--audiofx name=value'. Returns a process exit code."""
     try:
         name, value = arg.split("=", 1)
-        _write(name, _decode_voice(value) if name == "voice" else int(value))
+        decode = {"voice": _decode_voice, "setup": _decode_setup}.get(name, int)
+        _write(name, decode(value))
         return 0
     except Exception:
         return 2

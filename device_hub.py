@@ -20,7 +20,7 @@ from logging.handlers import RotatingFileHandler
 
 from PIL import Image, ImageDraw, ImageFont
 
-from devices import aula, aula_lighting, logi_audiofx, logi_headset, logi_mouse, win_mic
+from devices import aula, aula_lighting, logi_audiofx, logi_headset, logi_mouse, win_mic, win_spatial
 from estimate import RATED_IS_USE_TIME, Estimator, fmt_duration
 import ghub_import
 
@@ -322,6 +322,42 @@ class HeadsetCtl(Controller):
             log.warning("Blue VO!CE settings read failed: %s", e)
             current = {}
         st["voice_preset"] = logi_audiofx.match_voice_preset(current, self._voice_presets())
+        # Windows Sonic: offered when the headset is a stereo output (no Logitech audio driver).
+        try:
+            spk = logi_audiofx.endpoint_id("Speakers")
+            if spk and win_spatial.supported(spk):
+                st["sonic"] = win_spatial.is_on(spk)
+            else:
+                st.pop("sonic", None)
+        except Exception as e:
+            log.warning("Windows Sonic check failed: %s", e)
+            st.pop("sonic", None)
+        try:
+            st["fx_setup"] = logi_audiofx.setup_needed()
+        except Exception as e:
+            log.warning("audio effects setup check failed: %s", e)
+            st["fx_setup"] = []
+        # Remember the last working effect settings, to give them to new endpoints (see fx_setup).
+        last = self.cfg.setdefault("headset_fx", {})
+        before = dict(last)
+        last.update({k: int(st[k]) for k in ("surround", "room", "stereo", "bluevoice") if k in st})
+        if st["voice_preset"]:
+            last["voice_preset"] = st["voice_preset"]
+        if last != before:
+            save_config(self.cfg)
+
+    def _setup_values(self) -> dict:
+        """What to give new endpoints: the last known settings, else the previous G HUB key's surround."""
+        last = self.cfg.get("headset_fx", {})
+        prev = logi_audiofx.previous_surround() or {}
+        value = {k: last.get(k, prev.get(k, d)) for k, d in (("surround", 0), ("room", 1), ("stereo", 0))}
+        presets = self.cfg.get("voice_presets", [])
+        pick = next((p for p in presets if p["name"] == last.get("voice_preset")), None) \
+            or next((p for p in presets if not p["builtin"]), None) or (presets[0] if presets else None)
+        if pick:                     # without any preset there are no voice chain values to give
+            value.update(bluevoice=last.get("bluevoice", 0), voice=pick["values"], voice_name=pick["name"],
+                         mic_level=pick.get("mic_level"))
+        return value
 
     def _write(self, name, value):
         if name == "sidetone":
@@ -373,12 +409,27 @@ class HeadsetCtl(Controller):
             self.mark_away("Not connected")
 
     def apply(self, name, value):
+        if name == "fx_setup":
+            v = self._setup_values()
+            setup = {k: v[k] for k in ("surround", "room", "stereo", "bluevoice", "voice") if k in v}
+            if not logi_audiofx.write_without_prompt("setup", setup):
+                logi_audiofx.apply_elevated("setup", setup)
+            if v.get("mic_level") is not None and self.state.settings.get("mic_level") is not None:
+                win_mic.set_mic_level(v["mic_level"])
+            self._read_fx()
+            if self.state.settings.get("fx_setup"):
+                raise RuntimeError("the effects still have no settings")
+            log.info("audio effects set up on new endpoints: %s", {k: v[k] for k in v if k != "voice"})
+            return
         if name == "voice_preset":
             # A whole Blue VO!CE preset in one elevated write (one permission prompt).
             preset = next((p for p in self.cfg.get("voice_presets", []) if p["name"] == value), None)
             if preset is None:
                 raise RuntimeError(f"unknown Blue VO!CE preset {value!r}")
-            logi_audiofx.apply_elevated("voice", preset["values"])
+            if "bluevoice" in self.state.settings.get("fx_setup", []):
+                raise RuntimeError("set up Blue VO!CE for this headset first")
+            if not logi_audiofx.write_without_prompt("voice", preset["values"]):
+                logi_audiofx.apply_elevated("voice", preset["values"])
             # The preset's input gain is the Windows recording level (that's how G HUB applies it).
             level = preset.get("mic_level")
             if level is not None and self.state.settings.get("mic_level") is not None:
@@ -392,9 +443,16 @@ class HeadsetCtl(Controller):
                 raise RuntimeError("the microphone didn't take the preset")
             log.info("Blue VO!CE preset applied: %s (mic level %s%%)", value, level)
             return
+        if name == "sonic":
+            spk = logi_audiofx.endpoint_id("Speakers")
+            if not spk:
+                raise RuntimeError("PRO X 2 speakers not found")
+            win_spatial.set_sonic(spk, bool(value))
+            self._read_fx()
+            return
         if name in self.FX_NAMES:
-            # Windows audio effects: needs admin, so a UAC prompt appears. Not saved for re-applying,
-            # because re-applying would mean surprise permission prompts; the setting persists anyway.
+            # Logitech's audio effects. Blue VO!CE needs no prompt; surround may (see logi_audiofx).
+            # Not saved for re-applying: they persist on their own.
             if not logi_audiofx.write_without_prompt(name, int(value)):
                 logi_audiofx.apply_elevated(name, int(value))
             self._read_fx()
@@ -953,6 +1011,20 @@ class Panel:
             eq_scales.append(s)
             eq_labels.append(lab)
 
+        # Two surround options, each shown only where it's available: Windows Sonic (built into Windows,
+        # stereo headset = no Logitech audio driver) and DTS (Logitech's driver, headset is 7.1).
+        fx_area = tk.Frame(snd, bg=C["card"])
+        fx_area.pack(fill="x")
+        sonic_box = tk.Frame(fx_area, bg=C["card"])
+        self._label(sonic_box, "Surround sound (Windows Sonic, built into Windows)", muted=True, anchor="w").pack(
+            fill="x", pady=(self.px(8), 0))
+        sonic = tk.BooleanVar()
+        tk.Checkbutton(sonic_box, text="Enable surround sound", variable=sonic,
+                       command=lambda: self.hub.set("headset", "sonic", sonic.get()),
+                       **self._check_style()).pack(anchor="w")
+        dts_box = tk.Frame(fx_area, bg=C["card"])
+        parts.update(sonic=sonic, sonic_box=sonic_box, dts_box=dts_box, fx_shown=None)
+        snd = dts_box                                  # the DTS controls below go in their own frame
         self._label(snd, "Surround sound (DTS Headphone:X 2.0)", muted=True, anchor="w").pack(
             fill="x", pady=(self.px(8), 0))
         surround = tk.BooleanVar()
@@ -960,6 +1032,8 @@ class Panel:
                                      command=lambda: self.hub.set("headset", "surround", surround.get()),
                                      **self._check_style())
         cb_surround.pack(anchor="w")
+        setup_snd = tk.Frame(snd, bg=C["card"])      # holds a "set up" button while it's needed
+        setup_snd.pack(fill="x")
         room_row = tk.Frame(snd, bg=C["card"])
         room_row.pack(fill="x", pady=(self.px(2), 0))
         room_btns = {}
@@ -976,6 +1050,7 @@ class Panel:
             b = self._flat_button(stereo_row, text, lambda v=val: self.hub.set("headset", "stereo", v), small=True)
             b.pack(side="left", padx=(0, self.px(4)))
             stereo_btns[val] = b
+        snd = pages["Sound"]
         fx_note = self._label(snd, "", muted=True, size=8, anchor="w", justify="left", wraplength=self.px(280))
         fx_note.pack(fill="x", pady=(self.px(4), 0))
         parts["fx_note"] = fx_note
@@ -998,14 +1073,22 @@ class Panel:
                                       command=lambda: self.hub.set("headset", "bluevoice", bluevoice.get()),
                                       **self._check_style())
         cb_bluevoice.pack(anchor="w")
+        setup_mic = tk.Frame(micp, bg=C["card"])
+        setup_mic.pack(fill="x")
+        for box in (setup_snd, setup_mic):
+            self._label(box, "Windows gave the headset new audio devices, so the effects have no settings "
+                             "yet. This copies your last ones over (Windows asks for permission once).",
+                        muted=True, size=8, anchor="w", justify="left", wraplength=self.px(280)).pack(fill="x")
+            self._flat_button(box, "Set up surround and Blue VO!CE",
+                              lambda: self.hub.set("headset", "fx_setup", True), small=True).pack(
+                anchor="w", pady=(self.px(2), self.px(4)))
+        parts.update(setup_boxes=(setup_snd, setup_mic), setup_shown=None)
         vrow = tk.Frame(micp, bg=C["card"])
         vrow.pack(fill="x", pady=(self.px(2), 0))
         self._label(vrow, "Preset", muted=True).pack(side="left", padx=(self.px(2), self.px(6)))
         voice_toggle = self._flat_button(vrow, "…", lambda: self._toggle_voice_list(), small=True)
         voice_toggle.pack(side="left")
         voice_list = tk.Frame(micp, bg=C["card"])            # packed under vrow while open
-        self._label(micp, "Changing Blue VO!CE or its preset asks Windows for permission.", muted=True,
-                    size=8, anchor="w", justify="left", wraplength=self.px(280)).pack(fill="x")
         parts.update(vrow=vrow, voice_toggle=voice_toggle, voice_list=voice_list, voice_open=False,
                      voice_btns={}, voice_names=None)
         self._label(micp, "Sidetone (hear your own voice)", muted=True, anchor="w").pack(
@@ -1195,7 +1278,31 @@ class Panel:
             self._build_voice_presets(p, voices)
         p["voice_toggle"].configure(state="normal" if voices and "bluevoice" in st else "disabled")
         self._paint_voice(p, st.get("voice_preset"))
-        if "surround" not in st:
+        show_sonic = "sonic" in st
+        show_dts = not (show_sonic and "surround" not in st and "surround" not in st.get("fx_setup", []))
+        if p["fx_shown"] != (show_sonic, show_dts):
+            p["fx_shown"] = (show_sonic, show_dts)
+            p["sonic_box"].pack_forget()
+            p["dts_box"].pack_forget()
+            if show_sonic:
+                p["sonic_box"].pack(fill="x")
+            if show_dts:
+                p["dts_box"].pack(fill="x")
+        p["sonic"].set(bool(st.get("sonic")))
+        need = bool(st.get("fx_setup"))
+        if p["setup_shown"] != need:
+            p["setup_shown"] = need
+            for box in p["setup_boxes"]:
+                for w in box.winfo_children():
+                    if not need:
+                        w.pack_forget()
+                    elif isinstance(w, self.tk.Label):
+                        w.pack(fill="x")
+                    else:
+                        w.pack(anchor="w", pady=(self.px(2), self.px(4)))
+        if need or not show_dts:
+            p["fx_note"].configure(text="")
+        elif "surround" not in st:
             p["fx_note"].configure(text="Surround isn't available: Logitech's DTS audio effect isn't installed.")
         elif st.get("surround_no_prompt"):
             p["fx_note"].configure(text="")

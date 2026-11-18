@@ -88,22 +88,51 @@ G HUB only stores their settings. Recording what G HUB changes for each switch s
 
 **Blue VO!CE presets in Device Hub:** Mic tab → **Preset ▾** lists G HUB's 12 built-in presets and your
 own, imported from G HUB (tray menu → Import headset settings from G HUB re-reads them). Picking one
-writes all 40 values in one go (one permission prompt) and sets the mic level to the preset's input gain.
+writes all 40 values in one go and sets the mic level to the preset's input gain.
 The button shows which preset the mic is on now, read back from the mic.
 
-Device Hub flips the same switches; no Logitech or DTS code is copied. Both live in admin-only places,
-so by default **Windows asks for permission** for each change, and a small helper
-(`DeviceHub.exe --audiofx name=value`) applies just that change.
+Device Hub flips the same switches; no Logitech or DTS code is copied.
 
-**Surround without prompts:** the DTS effect watches its registry key and applies changes live, so the
-admin-only notify write isn't needed. Run `tools\allow-surround-without-prompt.ps1` once from an
-administrator PowerShell to give your account write access to that one key; after that, surround
-on/off and its modes change with no prompt. `tools\undo-allow-surround-without-prompt.ps1` reverses it.
-The trade-off: any program running as you could change your surround settings.
-**Blue VO!CE** always needs the prompt: its switch is an endpoint property, which only admins can write.
+**Blue VO!CE needs no permission prompt.** Its switch and presets are microphone endpoint properties.
+Device Hub writes them through `IPolicyConfig`, the interface Windows' own Sound settings use: the Windows
+audio service writes them for you, so no administrator rights are needed (`devices/win_policy.py`).
+
+**Surround** lives in an admin-only registry key, so by default **Windows asks for permission** for each
+change, and a small helper (`DeviceHub.exe --audiofx name=value`) applies just that change. To avoid that:
+the DTS effect watches its registry key and applies changes live, so run
+`tools\allow-surround-without-prompt.ps1` once from an administrator PowerShell to give your account write
+access to that one key; after that, surround on/off and its modes change with no prompt.
+`tools\undo-allow-surround-without-prompt.ps1` reverses it. The trade-off: any program running as you
+could change your surround settings.
 
 These settings aren't saved for re-applying, so reconnecting a device never causes a surprise prompt;
 they persist on their own.
+
+**New audio devices:** when Windows gives the headset new audio endpoints (for example after its audio
+driver is reinstalled), the effects run without settings. The Sound and Mic tabs then offer **Set up
+surround and Blue VO!CE**, which copies your last settings over (surround from the previous endpoint's
+key; Blue VO!CE's 27 fixed values, which were identical in every recording, plus your last preset).
+
+**Uninstalling G HUB removes these effects.** Its uninstaller deletes Logitech's 7 audio driver
+packages (seen on a real PC), and they don't come from Windows Update: Windows' install log shows G HUB's
+installer put them there, and the Microsoft Update Catalog has no match. Back up
+`C:\Windows\System32\DriverStore\FileRepository\logi_audio*` before uninstalling; reinstall them with
+`pnputil /add-driver "<backup>\*.inf" /subdirs /install` from an administrator prompt. Without them,
+use Windows Sonic (below) for surround.
+
+## Windows Sonic (surround without any Logitech software)
+Without Logitech's audio driver the PRO X 2 is a normal stereo headset, and Windows' built-in virtual
+surround, **Windows Sonic for Headphones**, is available. The Sound tab then shows a Windows Sonic
+switch instead of DTS. (With Logitech's driver the headset is a 7.1 device for DTS, and Windows
+doesn't offer spatial sound on it.)
+
+Windows' public API for switching spatial sound (`SpatialAudioDeviceConfiguration.
+SetDefaultSpatialAudioFormatAsync`) refuses every app except the format's owner, even as administrator.
+Windows' Settings app instead writes three endpoint properties and a change signal itself
+(`AudioHandlers.dll`, found by disassembling it). Device Hub writes the same values the same way, then
+checks with Windows' spatial audio engine that Sonic really switched, and reports an error if not
+(`devices/win_spatial.py`). Tested on a stereo output: off → on → off, each confirmed by Windows'
+own `ActiveSpatialAudioFormat`.
 
 Verified on a real PRO X 2 with G HUB closed: surround off/on was audible immediately; Super Stereo
 Wide → Off via the no-prompt registry write was audible immediately; Blue VO!CE's live meters stopped
@@ -119,9 +148,9 @@ the keyboard accepted it.
 
 ## Removing G HUB, AULA's app and OpenLogi
 Device Hub covers everything they did for these three devices **except**:
-- **Possibly DTS surround and Blue VO!CE.** The effects are separate Logitech driver packages, but they
-  were probably installed by G HUB, so its uninstaller may remove them. Check after uninstalling: if the
-  surround and Blue VO!CE switches in Device Hub turn grey, the effects are gone.
+- **DTS surround and Blue VO!CE, unless you keep the drivers.** G HUB's uninstaller removes Logitech's
+  audio driver packages. Back them up first and reinstall them afterwards (see "DTS surround and Blue
+  VO!CE"), or use Windows Sonic for surround instead.
 - **Firmware updates.** G HUB is the only way to update the headset and its dongle, and AULA's app
   updates the keyboard. To update firmware later, reinstall the app, update, and uninstall it again.
 - **Keyboard per-key colours, key remapping and macros** (lighting effects are covered). They're stored
@@ -150,6 +179,8 @@ Uninstalling G HUB also removes its background updater service (`LGHUBUpdaterSer
 - `devices/aula_lighting.py`: AULA lighting effects and sleep timer
 - `devices/win_mic.py`: Windows mic level and mute
 - `devices/logi_audiofx.py`: DTS surround and Blue VO!CE (Logitech's installed audio effects)
+- `devices/win_policy.py`: audio endpoint settings without admin rights (Windows' IPolicyConfig)
+- `devices/win_spatial.py`: Windows Sonic on/off
 - `devices/logi_mouse.py`: Logitech HID++ 2.0 (battery, DPI, SmartShift, scroll wheel)
 - `devices/logi_headset.py`: PRO X 2 "Centurion" protocol (battery, sidetone, auto-off, EQ)
 
@@ -158,9 +189,13 @@ Uninstalling G HUB also removes its background updater service (`LGHUBUpdaterSer
   HID (matched by their vendor and product IDs) and to Windows' audio and registry APIs.
 - **G HUB's data is only read**, from a temporary copy of its database that's deleted straight after.
   Your settings stay on your PC in `%LOCALAPPDATA%\DeviceHub`.
-- **Administrator rights are used only for DTS surround and Blue VO!CE**, via a UAC prompt you approve.
-  The elevated helper (`DeviceHub.exe --audiofx NAME=VALUE`) accepts only the known setting names and
-  validated values, and writes only to the PRO X 2's audio endpoints and G HUB's surround key.
+- **Administrator rights are used only for DTS surround** (and as a fallback if Windows ever refuses a
+  no-admin write), via a UAC prompt you approve. The elevated helper (`DeviceHub.exe --audiofx NAME=VALUE`)
+  accepts only the known setting names and validated values, and writes only to the PRO X 2's audio
+  endpoints and G HUB's surround key.
+- **No-admin audio settings** (Blue VO!CE, Windows Sonic) go through Windows' `IPolicyConfig`, an
+  undocumented but long-standing Windows interface that Windows' own Sound settings use. Device Hub
+  writes only the PRO X 2's endpoints, with validated values, and Windows Sonic switches are verified.
 - **Install location:** `build.bat` installs to `%LOCALAPPDATA%\Programs`, which your account can write.
   That's convenient (no admin needed to install or update), but it means a program already running as
   you could replace `DeviceHub.exe` and get its code run as administrator the next time you approve a
