@@ -20,7 +20,7 @@ from logging.handlers import RotatingFileHandler
 
 from PIL import Image, ImageDraw, ImageFont
 
-from devices import aula, logi_headset, logi_mouse, win_mic
+from devices import aula, aula_lighting, logi_headset, logi_mouse, win_mic
 from estimate import Estimator, fmt_duration
 import ghub_import
 
@@ -116,8 +116,28 @@ class KeyboardCtl(Controller):
         r, msg = aula.read_battery()
         if r:
             self.mark_ok(r.percent, r.charging, r.source)
+            self._read_lighting()
         else:
             self.mark_away("Asleep" if "didn't answer" in msg else "Not connected")
+
+    def _read_lighting(self):
+        st = self.state.settings
+        try:
+            _, light, _ = aula_lighting.read()
+            st["lighting"] = vars(light)
+            st.pop("lighting_note", None)
+        except aula_lighting.BluetoothOnly as e:
+            st.pop("lighting", None)
+            st["lighting_note"] = str(e)
+        except Exception as e:
+            log.warning("keyboard lighting read failed: %s", e)
+            st.pop("lighting", None)
+            st["lighting_note"] = f"Couldn't read lighting: {e}"
+
+    def apply(self, name, value):
+        """Lighting lives in the keyboard itself, so nothing is saved or re-applied here."""
+        light = aula_lighting.write(name, value)
+        self.state.settings["lighting"] = vars(light)
 
 
 class MouseCtl(Controller):
@@ -598,7 +618,7 @@ class Panel:
         self.scale_px = root.winfo_fpixels("1i") / 96.0
         self.dragging: set[str] = set()
         self.cards: dict[str, dict] = {}
-        self.expanded = {"mouse": False, "headset": False}
+        self.expanded = {"keyboard": False, "mouse": False, "headset": False}
         self.states: list[DevState] = []
 
         root.title(TITLE)
@@ -670,15 +690,92 @@ class Panel:
         bar = tk.Canvas(right, width=self.px(90), height=self.px(6), bg=C["line"], highlightthickness=0, bd=0)
         bar.pack(anchor="e", pady=(self.px(2), 0))
         parts = {"card": card, "name": name, "detail": detail, "time": when, "pct": pct, "bar": bar}
-        if key in ("mouse", "headset"):
-            toggle = self._flat_button(card, "Settings ▾", lambda k=key: self.toggle_settings(k), small=True)
-            toggle.pack(anchor="w", pady=(self.px(8), 0))
-            box = tk.Frame(card, bg=C["card"])
-            notice = self._label(card, anchor="w", wraplength=self.px(320))
-            notice.configure(fg=C["error"])
-            parts.update(toggle=toggle, box=box, notice=notice)
-            (self._build_mouse_settings if key == "mouse" else self._build_headset_settings)(box, parts)
+        toggle = self._flat_button(card, "Settings ▾", lambda k=key: self.toggle_settings(k), small=True)
+        toggle.pack(anchor="w", pady=(self.px(8), 0))
+        box = tk.Frame(card, bg=C["card"])
+        notice = self._label(card, anchor="w", wraplength=self.px(320))
+        notice.configure(fg=C["error"])
+        parts.update(toggle=toggle, box=box, notice=notice)
+        {"keyboard": self._build_keyboard_settings, "mouse": self._build_mouse_settings,
+         "headset": self._build_headset_settings}[key](box, parts)
         self.cards[key] = parts
+
+    def _build_keyboard_settings(self, box, parts):
+        tk = self.tk
+        note = self._label(box, muted=True, anchor="w", justify="left", wraplength=self.px(320))
+        controls = tk.Frame(box, bg=C["card"])
+
+        self._label(controls, "Lighting effect", muted=True, anchor="w").pack(fill="x", pady=(self.px(8), self.px(2)))
+        grid = tk.Frame(controls, bg=C["card"])
+        grid.pack(fill="x")
+        effect_btns = {}
+        order = [0] + list(range(1, 20))
+        for i, eff in enumerate(order):
+            b = self._flat_button(grid, aula_lighting.EFFECT_NAMES[eff],
+                                  lambda e=eff: self.hub.set("keyboard", "effect", e), small=True)
+            b.grid(row=i // 4, column=i % 4, sticky="ew", padx=(0, self.px(3)), pady=(0, self.px(3)))
+            effect_btns[eff] = b
+        for c in range(4):
+            grid.columnconfigure(c, weight=1, uniform="fx")
+
+        self._label(controls, "Brightness", muted=True, anchor="w").pack(fill="x", pady=(self.px(6), 0))
+        bright = self._scale(controls, "kb_brightness", 0, aula_lighting.BRIGHT_MAX, 1)
+        bright.pack(fill="x")
+        self._on_release(bright, "kb_brightness", "keyboard", "brightness", int)
+        self._label(controls, "Speed", muted=True, anchor="w").pack(fill="x", pady=(self.px(6), 0))
+        speed = self._scale(controls, "kb_speed", 0, aula_lighting.SPEED_MAX, 1)
+        speed.pack(fill="x")
+        self._on_release(speed, "kb_speed", "keyboard", "speed", int)
+
+        self._label(controls, "Colour", muted=True, anchor="w").pack(fill="x", pady=(self.px(6), self.px(2)))
+        crow = tk.Frame(controls, bg=C["card"])
+        crow.pack(fill="x")
+        color_btns = {}
+        for idx, name in enumerate(aula_lighting.COLOR_NAMES):
+            hexc = aula_lighting.COLOR_HEX[idx]
+            b = tk.Button(crow, text="" if hexc else "Random", width=3 if hexc else 7, relief="flat", bd=0,
+                          cursor="hand2", bg=hexc or C["btn"], fg=C["text"], activebackground=hexc or C["accent"],
+                          font=("Segoe UI", 8), highlightthickness=2, highlightbackground=C["card"],
+                          command=lambda i=idx: self.hub.set("keyboard", "color", i))
+            b.pack(side="left", padx=(0, self.px(4)))
+            color_btns[idx] = b
+
+        self._label(controls, "Keyboard sleeps after", muted=True, anchor="w").pack(fill="x", pady=(self.px(6), self.px(2)))
+        srow = tk.Frame(controls, bg=C["card"])
+        srow.pack(fill="x")
+        sleep_btns = {}
+        for i, secs in enumerate(aula_lighting.SLEEP_SECONDS):
+            text = f"{secs // 60} min" if secs % 60 == 0 else f"{secs / 60:g} min"
+            b = self._flat_button(srow, text, lambda s=secs: self.hub.set("keyboard", "sleep_seconds", s), small=True)
+            b.grid(row=i // 5, column=i % 5, sticky="ew", padx=(0, self.px(3)), pady=(0, self.px(3)))
+            sleep_btns[secs] = b
+        for c in range(5):
+            srow.columnconfigure(c, weight=1, uniform="sl")
+        parts.update(kb_note=note, kb_controls=controls, effect_btns=effect_btns, kb_bright=bright,
+                     kb_speed=speed, color_btns=color_btns, kb_sleep_btns=sleep_btns)
+
+    def _update_keyboard(self, p, s):
+        light = s.settings.get("lighting")
+        note = s.settings.get("lighting_note") or ("Keyboard not connected." if not s.online else "Reading lighting…")
+        if light and s.online:
+            p["kb_note"].pack_forget()
+            p["kb_controls"].pack(fill="x")
+            for eff, b in p["effect_btns"].items():
+                self._paint_button(b, light["effect"] == eff)
+            self._set_scale("kb_brightness", p["kb_bright"], light["brightness"])
+            self._set_scale("kb_speed", p["kb_speed"], light["speed"])
+            for idx, b in p["color_btns"].items():
+                on = light["color"] == idx
+                if aula_lighting.COLOR_HEX[idx]:
+                    b.configure(text="✓" if on else "", fg="#111111")
+                else:
+                    self._paint_button(b, on)
+            for secs, b in p["kb_sleep_btns"].items():
+                self._paint_button(b, light["sleep_seconds"] == secs)
+        else:
+            p["kb_controls"].pack_forget()
+            p["kb_note"].configure(text=note)
+            p["kb_note"].pack(fill="x", pady=(self.px(8), 0))
 
     def _build_mouse_settings(self, box, parts):
         tk = self.tk
@@ -836,6 +933,8 @@ class Panel:
                 self._update_mouse(p, s)
             elif s.key == "headset":
                 self._update_headset(p, s)
+            elif s.key == "keyboard":
+                self._update_keyboard(p, s)
         self.place()
 
     def _set_scale(self, key, scale, value):

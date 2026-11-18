@@ -324,3 +324,98 @@ class AppLogicTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ----------------------------------------------------------------------------- AULA lighting
+
+from devices import aula_lighting as AL   # noqa: E402
+
+
+def sample_page() -> bytearray:
+    p = bytearray(AL.PAGE_LEN)
+    p[AL.OFF_EFFECT] = 2                                 # Breathing
+    p[AL.OFF_SLEEP] = 10                                 # 300 s
+    for i in range(19):
+        p[AL.OFF_TABLE + i * 2] = 7                      # brightness 7
+        p[AL.OFF_TABLE + i * 2 + 1] = (3 << 4) | 2       # speed 3, blue
+    p[AL.OFF_CUSTOM_BRIGHT] = 9
+    p[126], p[127] = 0x5A, 0xA5
+    return p
+
+
+class FakeKeyboardDongle:
+    """Keyboard behind the 2.4G dongle: answers 0x44 with the page in 14-byte chunks, accepts 0x04 writes.
+    drop = packet numbers to lose on the way back (as Bluetooth does with 1, 4, 7)."""
+
+    def __init__(self, drop=()):
+        self.page, self.out, self.incoming, self.drop, self.writes = bytes(sample_page()), [], {}, set(drop), 0
+
+    def close(self): pass
+
+    def read(self, n, timeout_ms=0):
+        return self.out.pop(0) if self.out else []
+
+    def write(self, pkt):
+        cmd, total, idx, op = pkt[1], pkt[2], pkt[3], pkt[4] >> 4
+        if cmd == 0x44 and op == 0:
+            chunks = [self.page[i:i + 14] for i in range(0, AL.PAGE_LEN, 14)]
+            for i, c in enumerate(chunks):
+                if i not in self.drop:
+                    self.out.append(list(AL.WirelessLink.packet(0x44, 0, c, len(chunks), i)))
+        elif cmd == 0x04 and op == 1:
+            self.incoming[idx] = bytes(pkt[5:5 + (pkt[4] & 0x0F)])
+            if len(self.incoming) == total:
+                self.page = b"".join(self.incoming[i] for i in range(total))
+                self.incoming, self.writes = {}, self.writes + 1
+
+
+def fake_link(dev):
+    link = AL.WirelessLink.__new__(AL.WirelessLink)
+    link.dev = dev
+    return link
+
+
+class LightingTests(unittest.TestCase):
+    def setUp(self):
+        self._open = AL.open_link
+
+    def tearDown(self):
+        AL.open_link = self._open
+
+    def test_parse(self):
+        self.assertEqual(AL.parse(bytes(sample_page())), AL.Lighting(2, 7, 3, 2, 300))
+        p = sample_page()
+        p[AL.OFF_CUSTOM], p[AL.OFF_EFFECT] = 1, 19      # custom effect uses its own brightness byte
+        self.assertEqual(AL.parse(bytes(p)).brightness, 9)
+
+    def test_patch_only_touches_the_right_bytes(self):
+        page = bytes(sample_page())
+        for name, value, offset in (("brightness", 4, AL.OFF_TABLE + 2), ("speed", 1, AL.OFF_TABLE + 3),
+                                    ("color", 5, AL.OFF_TABLE + 3), ("sleep_seconds", 600, AL.OFF_SLEEP)):
+            new = AL.patch(page, name, value)
+            diff = [i for i in range(AL.PAGE_LEN) if new[i] != page[i]]
+            self.assertEqual(diff, [offset], name)
+        self.assertEqual(AL.parse(AL.patch(page, "color", 5)).speed, 3)       # colour keeps speed
+        off = AL.patch(page, "effect", 0)
+        self.assertEqual((off[AL.OFF_CUSTOM], off[AL.OFF_EFFECT]), (0, 0))
+        custom = AL.patch(page, "effect", 19)
+        self.assertEqual((custom[AL.OFF_CUSTOM], custom[AL.OFF_EFFECT]), (1, 19))
+        with self.assertRaises(ValueError):
+            AL.patch(page, "sleep_seconds", 61)              # firmware only accepts 9 values
+
+    def test_write_roundtrip_over_dongle(self):
+        dev = FakeKeyboardDongle()
+        AL.open_link = lambda: (fake_link(dev), "2.4G")
+        light = AL.write("effect", 7)
+        self.assertEqual((light.effect, dev.writes), (7, 1))
+        self.assertEqual(AL.write("brightness", 3).brightness, 3)
+        self.assertEqual(AL.read()[1].brightness, 3)
+        AL.write("brightness", 3)                             # unchanged -> nothing written
+        self.assertEqual(dev.writes, 2)
+
+    def test_incomplete_page_is_refused(self):
+        dev = FakeKeyboardDongle(drop={1, 4, 7})              # what Bluetooth does
+        AL.open_link = lambda: (fake_link(dev), "2.4G")
+        with self.assertRaises(AL.ReadError):
+            AL.write("brightness", 1)
+        self.assertEqual(dev.writes, 0)

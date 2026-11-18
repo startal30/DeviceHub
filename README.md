@@ -4,7 +4,7 @@ One tray app for three devices, replacing AULA's software, Logitech G HUB and Lo
 
 | Device | Battery | Settings |
 |---|---|---|
-| AULA F99 Pro keyboard (2.4GHz dongle, Bluetooth, USB cable) | ✅ | – |
+| AULA F99 Pro keyboard (2.4GHz dongle, Bluetooth, USB cable) | ✅ | Lighting effect, brightness, speed, colour, sleep timer (dongle or cable only) |
 | Logitech MX Master 3S (Bolt receiver) | ✅ | Pointer speed (DPI), SmartShift, scroll direction, smooth scrolling |
 | Logitech PRO X 2 LIGHTSPEED headset | ✅ | Sidetone, mic level & mute, mic noise reduction, auto-off timer, 5-band EQ + G HUB's presets |
 
@@ -61,13 +61,20 @@ These **can't** be replaced, because they're audio processing that runs inside G
 **DTS surround** and **Blue VO!CE**. Without G HUB they're off. Windows Sonic
 (Settings → Sound → speakers → Spatial audio) can stand in for surround.
 
+## Keyboard lighting
+Lighting settings live in the keyboard's 128-byte settings page (protocol from aula-f99-pro-hub).
+They can be changed over the **2.4GHz dongle or the USB cable**, but **not over Bluetooth**: there the
+keyboard always drops 3 of the page's 10 reply packets, so the page can't be read safely, and writing a
+page that wasn't fully read could scramble the keyboard's settings. Every change is read back to confirm
+the keyboard accepted it.
+
 ## Removing G HUB, AULA's app and OpenLogi
 Device Hub covers everything they did for these three devices **except**:
 - **DTS surround and Blue VO!CE** (see above).
 - **Firmware updates.** G HUB is the only way to update the headset and its dongle, and AULA's app
   updates the keyboard. To update firmware later, reinstall the app, update, and uninstall it again.
-- **Keyboard lighting, key remapping and macros.** They're stored in the keyboard, so your current setup
-  keeps working; you just can't change it without AULA's app.
+- **Keyboard per-key colours, key remapping and macros** (lighting effects are covered). They're stored
+  in the keyboard, so your current setup keeps working; you just can't change it without AULA's app.
 - **Mouse buttons and gestures.** No Logitech mouse app is installed (no Options+), so they already run
   on the mouse's defaults.
 
@@ -88,6 +95,8 @@ Uninstalling G HUB also removes its background updater service (`LGHUBUpdaterSer
 - `tests/test_core.py`: offline tests with simulated devices
 - `build.bat`: test + build + install
 - `devices/aula.py`: AULA F99 Pro battery
+- `devices/aula_lighting.py`: AULA lighting effects and sleep timer
+- `devices/win_mic.py`: Windows mic level and mute
 - `devices/logi_mouse.py`: Logitech HID++ 2.0 (battery, DPI, SmartShift, scroll wheel)
 - `devices/logi_headset.py`: PRO X 2 "Centurion" protocol (battery, sidetone, auto-off, EQ)
 
