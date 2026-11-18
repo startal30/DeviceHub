@@ -245,7 +245,25 @@ class HeadsetCtl(Controller):
             self.saved()["sidetone"] = got["sidetone"]
         self.cfg["ghub_imported"] = time.time()
         log.info("imported from G HUB: %s", got)
-        return f"Imported {len(got['presets'])} EQ presets" + (" and sidetone" if got["sidetone"] is not None else "")
+        voices = self.import_voice_presets()
+        return (f"Imported {len(got['presets'])} EQ presets" + (", sidetone" if got["sidetone"] is not None else "")
+                + f" and {voices} Blue VO!CE presets")
+
+    def import_voice_presets(self) -> int:
+        """Copy G HUB's Blue VO!CE presets into settings.json, converted to the mic properties they set."""
+        got = ghub_import.read_voice_presets()
+        if not got:
+            return 0
+        self.cfg["voice_presets"] = [
+            {"name": p["name"], "builtin": p["builtin"],
+             "values": {str(pid): v for pid, v in logi_audiofx.voice_values(p["settings"]).items()},
+             "mic_level": logi_audiofx.voice_mic_level(p["settings"])}
+            for p in got]
+        log.info("imported %d Blue VO!CE presets from G HUB", len(got))
+        return len(got)
+
+    def _voice_presets(self) -> dict:
+        return {p["name"]: p["values"] for p in self.cfg.get("voice_presets", [])}
 
     def close(self):
         if self.hs:
@@ -297,6 +315,13 @@ class HeadsetCtl(Controller):
             st["surround_no_prompt"] = logi_audiofx.surround_writable()
         except Exception:
             st["surround_no_prompt"] = False
+        st["voice_presets"] = [(p["name"], p["builtin"]) for p in self.cfg.get("voice_presets", [])]
+        try:
+            current = logi_audiofx.read_voice() if "bluevoice" in st else {}
+        except Exception as e:
+            log.warning("Blue VO!CE settings read failed: %s", e)
+            current = {}
+        st["voice_preset"] = logi_audiofx.match_voice_preset(current, self._voice_presets())
 
     def _write(self, name, value):
         if name == "sidetone":
@@ -348,6 +373,25 @@ class HeadsetCtl(Controller):
             self.mark_away("Not connected")
 
     def apply(self, name, value):
+        if name == "voice_preset":
+            # A whole Blue VO!CE preset in one elevated write (one permission prompt).
+            preset = next((p for p in self.cfg.get("voice_presets", []) if p["name"] == value), None)
+            if preset is None:
+                raise RuntimeError(f"unknown Blue VO!CE preset {value!r}")
+            logi_audiofx.apply_elevated("voice", preset["values"])
+            # The preset's input gain is the Windows recording level (that's how G HUB applies it).
+            level = preset.get("mic_level")
+            if level is not None and self.state.settings.get("mic_level") is not None:
+                win_mic.set_mic_level(level)
+                self.saved()["mic_level"] = level
+            if self.hs is not None and self.state.online:
+                self._read_settings()
+            else:
+                self._read_fx()
+            if self.state.settings.get("voice_preset") != value:
+                raise RuntimeError("the microphone didn't take the preset")
+            log.info("Blue VO!CE preset applied: %s (mic level %s%%)", value, level)
+            return
         if name in self.FX_NAMES:
             # Windows audio effects: needs admin, so a UAC prompt appears. Not saved for re-applying,
             # because re-applying would mean surprise permission prompts; the setting persists anyway.
@@ -380,6 +424,13 @@ class Hub:
                 save_config(self.cfg)
             except Exception:
                 log.exception("G HUB import failed")
+        elif "voice_presets" not in self.cfg or any("mic_level" not in p for p in self.cfg["voice_presets"]):
+            # installs from before Blue VO!CE presets (or their mic level) existed
+            try:
+                self.by_key["headset"].import_voice_presets()
+                save_config(self.cfg)
+            except Exception:
+                log.exception("Blue VO!CE preset import failed")
 
     def import_ghub(self):
         self.jobs.put(("import", "headset", None, None))
@@ -929,8 +980,16 @@ class Panel:
                                       command=lambda: self.hub.set("headset", "bluevoice", bluevoice.get()),
                                       **self._check_style())
         cb_bluevoice.pack(anchor="w")
-        self._label(micp, "Changing Blue VO!CE asks Windows for permission.", muted=True, size=8,
-                    anchor="w").pack(fill="x")
+        vrow = tk.Frame(micp, bg=C["card"])
+        vrow.pack(fill="x", pady=(self.px(2), 0))
+        self._label(vrow, "Preset", muted=True).pack(side="left", padx=(self.px(2), self.px(6)))
+        voice_toggle = self._flat_button(vrow, "…", lambda: self._toggle_voice_list(), small=True)
+        voice_toggle.pack(side="left")
+        voice_list = tk.Frame(micp, bg=C["card"])            # packed under vrow while open
+        self._label(micp, "Changing Blue VO!CE or its preset asks Windows for permission.", muted=True,
+                    size=8, anchor="w").pack(fill="x")
+        parts.update(vrow=vrow, voice_toggle=voice_toggle, voice_list=voice_list, voice_open=False,
+                     voice_btns={}, voice_names=None)
         self._label(micp, "Sidetone (hear your own voice)", muted=True, anchor="w").pack(
             fill="x", pady=(self.px(8), 0))
         st = self._scale(micp, "sidetone", 0, 100, 1, fmt="{}%")
@@ -953,6 +1012,56 @@ class Panel:
                      mic=mic, mic_mute=mic_mute, nr=nr, cb_nr=cb_nr, surround=surround, cb_surround=cb_surround,
                      room_btns=room_btns, stereo_btns=stereo_btns, bluevoice=bluevoice, cb_bluevoice=cb_bluevoice)
         show("Sound")
+
+    def _toggle_voice_list(self):
+        p = self.cards["headset"]
+        p["voice_open"] = not p["voice_open"]
+        if p["voice_open"]:
+            p["voice_list"].pack(fill="x", pady=(self.px(4), self.px(2)), after=p["vrow"])
+        else:
+            p["voice_list"].pack_forget()
+        self._paint_voice(p, p.get("voice_current"))
+        self.place()
+
+    def _pick_voice(self, name):
+        self._toggle_voice_list()
+        self.hub.set("headset", "voice_preset", name)
+
+    def _build_voice_presets(self, p, presets: list):
+        """Two columns of buttons: your presets first, then G HUB's built-in ones."""
+        tk = self.tk
+        box = p["voice_list"]
+        for w in box.winfo_children():
+            w.destroy()
+        p["voice_btns"] = {}
+        row = 0
+        for title, group in (("Your presets", [n for n, b in presets if not b]),
+                             ("G HUB presets", [n for n, b in presets if b])):
+            if not group:
+                continue
+            self._label(box, title, muted=True, size=8, anchor="w").grid(
+                row=row, column=0, columnspan=2, sticky="w", pady=(self.px(2), self.px(1)))
+            row += 1
+            for i, name in enumerate(group):
+                text = name if len(name) <= 22 else name[:21].rstrip() + "…"
+                b = self._flat_button(box, text, lambda n=name: self._pick_voice(n), small=True)
+                b.grid(row=row + i // 2, column=i % 2, sticky="ew", padx=(0, self.px(4)), pady=(0, self.px(3)))
+                p["voice_btns"][name] = b
+            row += (len(group) + 1) // 2
+        box.columnconfigure(0, weight=1, uniform="v")
+        box.columnconfigure(1, weight=1, uniform="v")
+
+    def _paint_voice(self, p, current):
+        p["voice_current"] = current
+        if not p["voice_names"]:
+            label = "Import from G HUB (tray menu)"
+        else:
+            label = current or "Custom settings"
+            if len(label) > 30:
+                label = label[:29].rstrip() + "…"
+        p["voice_toggle"].configure(text=f"{label}  {'▴' if p['voice_open'] else '▾'}")
+        for name, b in p["voice_btns"].items():
+            self._paint_button(b, name == current)
 
     def _build_custom_presets(self, p, presets: dict):
         for w in p["custom"].winfo_children():
@@ -1062,6 +1171,12 @@ class Panel:
             self._paint_button(b, st.get("stereo") == val)
         p["bluevoice"].set(bool(st.get("bluevoice")))
         p["cb_bluevoice"].configure(state="normal" if "bluevoice" in st else "disabled")
+        voices = st.get("voice_presets", [])
+        if p["voice_names"] != voices:
+            p["voice_names"] = voices
+            self._build_voice_presets(p, voices)
+        p["voice_toggle"].configure(state="normal" if voices and "bluevoice" in st else "disabled")
+        self._paint_voice(p, st.get("voice_preset"))
         if "surround" not in st:
             p["fx_note"].configure(text="Surround isn't available: Logitech's DTS audio effect isn't installed.")
         elif st.get("surround_no_prompt"):

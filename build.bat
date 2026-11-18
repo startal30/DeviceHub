@@ -6,14 +6,15 @@ cd /d "%~dp0"
 set "DEST=%LOCALAPPDATA%\Programs\DeviceHub"
 
 python -m unittest discover tests || goto :err
-python -m pip install --user -r requirements.txt pyinstaller || goto :err
+python -m pip install --user -r requirements.txt pyinstaller==6.22.3 || goto :err
 python -m PyInstaller --noconfirm --clean --onedir --noconsole --name DeviceHub ^
     --icon assets\devicehub.ico --hidden-import pystray._win32 device_hub.py || goto :err
 
 REM Close a running copy so its files can be replaced, and give Windows a moment to release them.
 REM /R:5 /W:2 = give up after 5 retries 2 s apart (robocopy's default is a million retries, 30 s apart).
 taskkill /im DeviceHub.exe /f >nul 2>&1
-timeout /t 2 /nobreak >nul
+REM (ping instead of timeout: timeout fails when there's no console input, e.g. when run from a script)
+ping -n 3 127.0.0.1 >nul
 robocopy dist\DeviceHub "%DEST%" /MIR /R:5 /W:2 /NFL /NDL /NJH /NJS /NP >nul
 if %errorlevel% geq 8 (
     echo Couldn't replace the installed files. Exit Device Hub from its tray icon and run build.bat again.

@@ -47,7 +47,8 @@ You get a notification when a device reaches 100% on the charger.
 On first start, Device Hub reads G HUB's saved settings (read-only, from a copy of
 `%LOCALAPPDATA%\LGHUB\settings.db`) and imports:
 - your own EQ presets, shown under "Your presets (from G HUB)";
-- the headset's sidetone level.
+- the headset's sidetone level;
+- all Blue VO!CE presets (built-in and yours).
 
 The EQ, sidetone and auto-off that G HUB last set are stored **in the headset itself**, so they keep
 working without G HUB. Device Hub saves them and puts them back if the headset ever resets.
@@ -68,8 +69,16 @@ G HUB only stores their settings. Recording what G HUB changes for each switch s
   `SelectedSurround` (0 = DTS, 2 = off), `DTSroomModel` (Entertainment/Gaming/Sports = 0/1/2),
   `DTSstereoModel` (Off/Front/Wide/Traditional = 0/1/2/3). Writing speaker property
   `{d57f93ae-4210-46b3-acfc-90437b666152},1` then tells the effect to re-read them.
-- **Blue VO!CE:** microphone property `{b4d50347-1450-477f-b173-56b14770589a},1` = 1/0. The other ~70
-  properties in that set are the voice chain settings; Device Hub leaves them as G HUB set them.
+- **Blue VO!CE:** microphone property `{b4d50347-1450-477f-b173-56b14770589a},1` = 1/0.
+- **Blue VO!CE presets:** a preset is 40 float properties in that same set (noise reduction, gate,
+  compressor, 3-band EQ, de-popper, de-esser, limiter, volume). The preset's input gain isn't sent to the
+  effect: G HUB sets the Windows recording level to it (0.5 → 50%). Two presets applied by G HUB were
+  recorded, and all 40 values matched; nothing else changed.
+
+**Blue VO!CE presets in Device Hub:** Mic tab → **Preset ▾** lists G HUB's 12 built-in presets and your
+own, imported from G HUB (tray menu → Import headset settings from G HUB re-reads them). Picking one
+writes all 40 values in one go (one permission prompt) and sets the mic level to the preset's input gain.
+The button shows which preset the mic is on now, read back from the mic.
 
 Device Hub flips the same switches; no Logitech or DTS code is copied. Both live in admin-only places,
 so by default **Windows asks for permission** for each change, and a small helper
@@ -119,6 +128,7 @@ Uninstalling G HUB also removes its background updater service (`LGHUBUpdaterSer
 - Logs: `%LOCALAPPDATA%\DeviceHub\log.txt`
 
 ## Files
+- `LICENSE` (GPL-3.0) and `THIRD_PARTY_NOTICES.md`
 - `device_hub.py`: the tray app and panel
 - `estimate.py`: time-left / time-to-full from measured battery history
 - `ghub_import.py`: reads headset EQ presets and sidetone from G HUB's settings database
@@ -131,11 +141,39 @@ Uninstalling G HUB also removes its background updater service (`LGHUBUpdaterSer
 - `devices/logi_mouse.py`: Logitech HID++ 2.0 (battery, DPI, SmartShift, scroll wheel)
 - `devices/logi_headset.py`: PRO X 2 "Centurion" protocol (battery, sidetone, auto-off, EQ)
 
-## Credits
-Protocols come from these open-source projects:
+## Security and privacy
+- **No network access.** Device Hub never connects to the internet. It talks to the three devices over USB
+  HID (matched by their vendor and product IDs) and to Windows' audio and registry APIs.
+- **G HUB's data is only read**, from a temporary copy of its database that's deleted straight after.
+  Your settings stay on your PC in `%LOCALAPPDATA%\DeviceHub`.
+- **Administrator rights are used only for DTS surround and Blue VO!CE**, via a UAC prompt you approve.
+  The elevated helper (`DeviceHub.exe --audiofx NAME=VALUE`) accepts only the known setting names and
+  validated values, and writes only to the PRO X 2's audio endpoints and G HUB's surround key.
+- **Install location:** `build.bat` installs to `%LOCALAPPDATA%\Programs`, which your account can write.
+  That's convenient (no admin needed to install or update), but it means a program already running as
+  you could replace `DeviceHub.exe` and get its code run as administrator the next time you approve a
+  Device Hub prompt. If that matters to you, copy `dist\DeviceHub` to `C:\Program Files\DeviceHub`
+  instead and start it from there. Windows shows "Unknown publisher" because the exe isn't code-signed.
+- **`tools\allow-surround-without-prompt.ps1`** lets your account write one registry key that the DTS
+  audio effect reads (it can set values but not create subkeys). Any program running as you could then
+  change, or feed unexpected values to, the surround settings. It's optional; undo it with
+  `tools\undo-allow-surround-without-prompt.ps1`.
+- **Keyboard lighting writes** are only sent after the whole settings page was read and checked, and
+  are read back to confirm.
+
+Found a security problem? Please open an issue (without exploit details) or contact the maintainer
+through GitHub.
+
+## Credits and license
+Device Hub is licensed under the **GNU General Public License v3.0** (`LICENSE`), because
+`devices/logi_headset.py` is ported from HeadsetControl (GPL-3.0). Protocols come from these projects
+(details and the MIT notice in `THIRD_PARTY_NOTICES.md`):
 - [xx12ek/aula-f99-pro-hub](https://github.com/xx12ek/aula-f99-pro-hub) (MIT): AULA keyboard
-- [Solaar](https://github.com/pwr-Solaar/Solaar) (GPL-2.0): Logitech HID++
-- [HeadsetControl](https://github.com/Sapd/HeadsetControl) (GPL-3.0): PRO X 2 headset.
-  `devices/logi_headset.py` is ported from it, so that file is GPL-3.0.
+- [Solaar](https://github.com/pwr-Solaar/Solaar) (GPL-2.0-or-later): Logitech HID++
+- [HeadsetControl](https://github.com/Sapd/HeadsetControl) (GPL-3.0): PRO X 2 headset
 
 The PRO X 2's sidetone byte order was worked out on real hardware and differs from HeadsetControl's.
+DTS surround and Blue VO!CE support was worked out by recording which settings G HUB changes; no
+Logitech or DTS code or files are included.
+
+Not affiliated with or endorsed by AULA, Logitech or DTS. All trademarks belong to their owners.

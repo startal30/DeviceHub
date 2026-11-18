@@ -277,7 +277,7 @@ class EstimateTests(unittest.TestCase):
 class GhubImportTests(unittest.TestCase):
     def test_reads_custom_presets_and_sidetone(self):
         doc = {"cards": [
-            {"attribute": "CENTURION_PRO_EQ", "name": "Perfect EQ",
+            {"attribute": "CENTURION_PRO_EQ", "name": "My EQ",
              "centurionProEqualizer": {"gains": [5, 3, 1, 2, 3], "type": "ONBOARD"}},
             {"attribute": "CENTURION_PRO_EQ", "name": "EQUALIZER_FLAT", "readOnly": True,
              "centurionProEqualizer": {"gains": [0, 0, 0, 0, 0]}},
@@ -292,7 +292,7 @@ class GhubImportTests(unittest.TestCase):
         con.commit()
         con.close()
         got = ghub_import.read_headset_settings(path)
-        self.assertEqual(got["presets"], {"Perfect EQ": [5, 3, 1, 2, 3], "Loud": [12, 0, 0, 0, -12]})
+        self.assertEqual(got["presets"], {"My EQ": [5, 3, 1, 2, 3], "Loud": [12, 0, 0, 0, -12]})
         self.assertEqual(got["sidetone"], 47)
 
     def test_missing_ghub(self):
@@ -460,3 +460,85 @@ class SurroundNoPromptTests(unittest.TestCase):
 
     def test_bluevoice_never_uses_the_no_prompt_path(self):
         self.assertFalse(FX.write_without_prompt("bluevoice", 1))
+        self.assertFalse(FX.write_without_prompt("voice", 1))
+
+
+# Part of a user's G HUB preset (a copy of Broadcaster 1) and the mic values G HUB wrote for it (real PRO X 2).
+BROADCASTER = {
+    "highPassFilter": {"enabled": True, "frequency": 70},
+    "noiseReduction": {"enabled": True, "release": 270, "sensitivity": 5, "bias": 2, "maxAttenuation": -10},
+    "multiBandEq": {"enabled": True, "lowBandFilter": {"frequency": 150, "q": 0.5},
+                    "highBandFilter": {"frequency": 6200, "q": 5, "gain": 9}},
+    "dePopper": {"threshold": -15, "width": 1.5}, "deEsser": {"frequency": 5500},
+    "hardLimiter": {"boost": 10}, "inputGain": 0.5,
+}
+
+
+class VoicePresetTests(unittest.TestCase):
+    def test_field_map(self):
+        self.assertEqual(len(FX.VOICE_FIELDS), 40)
+        self.assertEqual(len(FX.VOICE_PIDS), 40)                 # no property used twice
+        self.assertNotIn(1, FX.VOICE_PIDS)                       # the on/off switch isn't part of a preset
+
+    def test_preset_to_mic_values(self):
+        v = FX.voice_values(BROADCASTER)
+        self.assertEqual(set(v), FX.VOICE_PIDS)
+        self.assertEqual((v[101], v[200], v[203], v[405], v[410], v[412]), (70, 270, -10, 0.5, 6200, 9))
+        self.assertEqual((v[500], v[503], v[508], v[902]), (-15, 1.5, 5500, 10))
+        self.assertEqual(v[406], 0.0)                            # missing low-band gain: G HUB writes 0
+        self.assertEqual(v[3], 0.0)                              # missing volume: G HUB writes 0
+        self.assertEqual(FX.voice_values({"volume": True})[3], 0.0)   # a bool is not a number here
+        self.assertEqual(FX.voice_mic_level(BROADCASTER), 50)     # inputGain 0.5 -> Windows mic level 50%
+        self.assertEqual(FX.voice_mic_level({}), 100)
+        self.assertEqual(FX.voice_mic_level({"inputGain": 3}), 100)
+
+    def test_helper_argument_roundtrip(self):
+        v = FX.voice_values(dict(BROADCASTER, volume=-5.490899085998535))
+        arg = FX.helper_arg("voice", v)
+        self.assertTrue(arg.startswith("voice=3:-5.490899085998535,101:70.0,"))
+        self.assertEqual(FX._decode_voice(arg.split("=", 1)[1]), v)
+
+    def test_helper_rejects_bad_presets(self):
+        good = FX.voice_values(BROADCASTER)
+        enc = FX._encode_voice(good)
+        self.assertEqual(FX.run_helper("voice=" + enc.rsplit(",", 1)[0]), 2)      # a property missing
+        self.assertEqual(FX.run_helper("voice=" + enc + ",1:0.0"), 2)             # the on/off switch
+        self.assertEqual(FX.run_helper("voice=" + enc.replace("101:70.0", "101:nan")), 2)
+        self.assertEqual(FX.run_helper("voice=" + enc.replace("101:70.0", "101:1e9")), 2)
+        self.assertEqual(FX.run_helper("voice=garbage"), 2)
+
+    def test_float_bits(self):
+        for x in (0.0, 70.0, -5.490899085998535, 0.5, 6200.0):
+            self.assertAlmostEqual(FX._bits_to_f32(FX._f32_to_bits(x)), x, places=5)
+        self.assertEqual(FX._f32_to_bits(1.0), 0x3F800000)
+
+    def test_match_current_preset(self):
+        a = {str(p): x for p, x in FX.voice_values(dict(BROADCASTER, volume=-5.490899085998535)).items()}
+        b = {str(p): x for p, x in FX.voice_values({}).items()}
+        presets = {"Mine": a, "Flat": b}
+        mic = {int(p): FX._bits_to_f32(FX._f32_to_bits(x)) for p, x in a.items()}   # as stored (float32)
+        self.assertEqual(FX.match_voice_preset(mic, presets), "Mine")
+        mic[902] = 11.0
+        self.assertIsNone(FX.match_voice_preset(mic, presets))
+        self.assertIsNone(FX.match_voice_preset({}, presets))
+
+    def test_import_from_ghub(self):
+        doc = {"cards": [
+            {"attribute": "BLUE_VOICE_2_SETTINGS", "name": "Broadcaster 1", "readOnly": True,
+             "blueVoice2Settings": {"description": "", "settings": BROADCASTER}},
+            {"attribute": "BLUE_VOICE_2_SETTINGS", "name": "My Voice",
+             "blueVoice2Settings": {"settings": {"volume": -5.49}}},
+            {"attribute": "BLUE_VOICE_2_SETTINGS", "name": "broken", "blueVoice2Settings": {}},
+            {"attribute": "CENTURION_PRO_EQ", "name": "My EQ", "centurionProEqualizer": {"gains": [0] * 5}},
+        ]}
+        path = os.path.join(tempfile.mkdtemp(), "settings.db")
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE data (_id INTEGER PRIMARY KEY, _date_created TEXT, file BLOB)")
+        con.execute("INSERT INTO data (file) VALUES (?)", (json.dumps(doc).encode(),))
+        con.commit()
+        con.close()
+        got = ghub_import.read_voice_presets(path)
+        self.assertEqual([(p["name"], p["builtin"]) for p in got],
+                         [("Broadcaster 1", True), ("My Voice", False)])
+        self.assertEqual(got[0]["settings"]["hardLimiter"]["boost"], 10)
+        self.assertIsNone(ghub_import.read_voice_presets(os.path.join(tempfile.mkdtemp(), "nope.db")))

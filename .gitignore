@@ -3,4 +3,9 @@ __pycache__/
 build/
 dist/
 *.spec
-.claude/settings.local.json
+.claude/
+*.log
+# never commit G HUB data or Device Hub's own settings
+settings.db*
+settings.json
+battery_history.json

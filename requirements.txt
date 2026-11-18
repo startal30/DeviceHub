@@ -1,4 +1,6 @@
-hidapi>=0.14
-pystray>=0.19.5
-pillow>=10.0
-pycaw>=20240316
+# Exact versions the app is built and tested with (update deliberately, then re-run build.bat).
+hidapi==0.15.0
+pystray==0.19.5
+pillow==13.0.0
+pycaw==20260927
+comtypes==1.5.0

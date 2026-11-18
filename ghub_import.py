@@ -6,9 +6,9 @@ JSON document. The parts used here:
                                                are the cards without "readOnly": true
   cards[] with attribute ACOUSTICS and a PRO X 2 deviceSignature
           -> acoustics.sidetone.gain (0.0 - 1.0)
+  cards[] with attribute BLUE_VOICE_2_SETTINGS -> Blue VO!CE presets {"name", "blueVoice2Settings":
+                                               {"settings": {...}}}; built-in ones have "readOnly": true
 The database is copied to a temp folder first and only ever read, so G HUB's own file is never touched.
-DTS surround, Blue VO!CE, noise reduction and mic gain are processed by G HUB on the PC, not stored in the
-headset, so there is nothing to import for them.
 """
 from __future__ import annotations
 
@@ -72,5 +72,23 @@ def read_headset_settings(db_path: str = GHUB_DB) -> dict | None:
     return {"presets": presets, "sidetone": sidetone}
 
 
+def read_voice_presets(db_path: str = GHUB_DB) -> list[dict] | None:
+    """G HUB's Blue VO!CE presets (cards with attribute BLUE_VOICE_2_SETTINGS), built-in and user-made:
+    [{"name", "builtin": bool, "settings": {...}}] in G HUB's order, or None if G HUB isn't installed."""
+    js = _load_ghub_json(db_path)
+    if js is None:
+        return None
+    out = []
+    for c in _cards(js):
+        if c.get("attribute") != "BLUE_VOICE_2_SETTINGS":
+            continue
+        settings = (c.get("blueVoice2Settings") or {}).get("settings")
+        name = (c.get("name") or "").strip()
+        if name and isinstance(settings, dict):
+            out.append({"name": name, "builtin": bool(c.get("readOnly")), "settings": settings})
+    return out
+
+
 if __name__ == "__main__":
     print(json.dumps(read_headset_settings(), indent=2))
+    print([p["name"] for p in read_voice_presets() or []])
