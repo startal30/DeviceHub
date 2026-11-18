@@ -137,7 +137,10 @@ own `ActiveSpatialAudioFormat`.
 Verified on a real PRO X 2 with G HUB closed: surround off/on was audible immediately; Super Stereo
 Wide → Off via the no-prompt registry write was audible immediately; Blue VO!CE's live meters stopped
 when it was turned off and resumed when it was turned on; applying a Blue VO!CE preset from Device Hub
-set all 40 of its values on the mic (read back afterwards).
+set all 40 of its values on the mic (read back afterwards). Blue VO!CE switched through IPolicyConfig
+(no admin) takes effect live: recording the mic in a quiet room four times, off/on/off/on, the
+processed stream changed every time (unprocessed: 56% exact-zero samples, about −89 dBFS; processed:
+12%, about −91 dBFS).
 
 ## Keyboard lighting
 Lighting settings live in the keyboard's 128-byte settings page (protocol from aula-f99-pro-hub).
