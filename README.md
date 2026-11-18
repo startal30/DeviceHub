@@ -113,12 +113,25 @@ driver is reinstalled), the effects run without settings. The Sound and Mic tabs
 surround and Blue VO!CE**, which copies your last settings over (surround from the previous endpoint's
 key; Blue VO!CE's 27 fixed values, which were identical in every recording, plus your last preset).
 
-**Uninstalling G HUB removes these effects.** Its uninstaller deletes Logitech's 7 audio driver
-packages (seen on a real PC), and they don't come from Windows Update: Windows' install log shows G HUB's
-installer put them there, and the Microsoft Update Catalog has no match. Back up
-`C:\Windows\System32\DriverStore\FileRepository\logi_audio*` before uninstalling; reinstall them with
-`pnputil /add-driver "<backup>\*.inf" /subdirs /install` from an administrator prompt. Without them,
-use Windows Sonic (below) for surround.
+**Uninstalling G HUB removes these effects, so Device Hub keeps a copy.** G HUB's uninstaller deletes
+Logitech's 7 audio driver packages (seen on a real PC), and they don't come from Windows Update: Windows'
+install log shows G HUB's installer put them there, and the Microsoft Update Catalog has no match.
+Whenever Device Hub finds them installed, it copies them from Windows' driver store to
+`%LOCALAPPDATA%\DeviceHub\logitech-audio-drivers` (about 21 MB, no admin needed). If they disappear,
+the Sound and Mic tabs offer **Restore DTS surround and Blue VO!CE**: Windows asks for permission once,
+and Windows' own `pnputil` reinstalls them (it only accepts packages whose signature checks out). Then
+click **Set up surround and Blue VO!CE** to give the new audio devices your settings.
+The copy stays on your PC; Logitech's drivers are never uploaded or shared.
+
+### Getting DTS surround and Blue VO!CE without keeping G HUB
+1. Install Device Hub and start it.
+2. Install G HUB from Logitech's website, with the headset's dongle plugged in, and let it finish setting
+   up the headset (this installs Logitech's audio drivers). Device Hub backs them up within a minute
+   (log: "backed up 7 Logitech audio driver packages").
+3. Uninstall G HUB.
+4. In Device Hub: **Restore DTS surround and Blue VO!CE**, then **Set up surround and Blue VO!CE**.
+
+Prefer no Logitech software at all? Skip this and use Windows Sonic (below) for surround.
 
 ## Windows Sonic (surround without any Logitech software)
 Without Logitech's audio driver the PRO X 2 is a normal stereo headset, and Windows' built-in virtual
@@ -151,9 +164,9 @@ the keyboard accepted it.
 
 ## Removing G HUB, AULA's app and OpenLogi
 Device Hub covers everything they did for these three devices **except**:
-- **DTS surround and Blue VO!CE, unless you keep the drivers.** G HUB's uninstaller removes Logitech's
-  audio driver packages. Back them up first and reinstall them afterwards (see "DTS surround and Blue
-  VO!CE"), or use Windows Sonic for surround instead.
+- **Nothing for DTS surround and Blue VO!CE, as long as Device Hub ran while G HUB was installed.** G HUB's
+  uninstaller removes Logitech's audio drivers, but Device Hub keeps a copy and restores it with one
+  click (see "Getting DTS surround and Blue VO!CE without keeping G HUB").
 - **Firmware updates.** G HUB is the only way to update the headset and its dongle, and AULA's app
   updates the keyboard. To update firmware later, reinstall the app, update, and uninstall it again.
 - **Keyboard per-key colours, key remapping and macros** (lighting effects are covered). They're stored
@@ -182,6 +195,7 @@ Uninstalling G HUB also removes its background updater service (`LGHUBUpdaterSer
 - `devices/aula_lighting.py`: AULA lighting effects and sleep timer
 - `devices/win_mic.py`: Windows mic level and mute
 - `devices/logi_audiofx.py`: DTS surround and Blue VO!CE (Logitech's installed audio effects)
+- `devices/logi_drivers.py`: backs up / restores Logitech's audio effect drivers
 - `devices/win_policy.py`: audio endpoint settings without admin rights (Windows' IPolicyConfig)
 - `devices/win_spatial.py`: Windows Sonic on/off
 - `devices/logi_mouse.py`: Logitech HID++ 2.0 (battery, DPI, SmartShift, scroll wheel)
@@ -195,7 +209,10 @@ Uninstalling G HUB also removes its background updater service (`LGHUBUpdaterSer
 - **Administrator rights are used only for DTS surround** (and as a fallback if Windows ever refuses a
   no-admin write), via a UAC prompt you approve. The elevated helper (`DeviceHub.exe --audiofx NAME=VALUE`)
   accepts only the known setting names and validated values, and writes only to the PRO X 2's audio
-  endpoints and G HUB's surround key.
+  endpoints and G HUB's surround key. **Restoring Logitech's drivers** runs Windows' `pnputil` elevated
+  on the `.inf` files in Device Hub's backup folder. That folder is writable by your account, so a
+  program running as you could swap in a different driver package; `pnputil` still refuses anything
+  without a valid signature, and Windows asks you before it runs.
 - **No-admin audio settings** (Blue VO!CE, Windows Sonic) go through Windows' `IPolicyConfig`, an
   undocumented but long-standing Windows interface that Windows' own Sound settings use. Device Hub
   writes only the PRO X 2's endpoints, with validated values, and Windows Sonic switches are verified.

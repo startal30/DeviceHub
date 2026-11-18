@@ -20,7 +20,8 @@ from logging.handlers import RotatingFileHandler
 
 from PIL import Image, ImageDraw, ImageFont
 
-from devices import aula, aula_lighting, logi_audiofx, logi_headset, logi_mouse, win_mic, win_spatial
+from devices import (aula, aula_lighting, logi_audiofx, logi_drivers, logi_headset, logi_mouse, win_mic,
+                     win_spatial)
 from estimate import RATED_IS_USE_TIME, Estimator, fmt_duration
 import ghub_import
 
@@ -322,6 +323,19 @@ class HeadsetCtl(Controller):
             log.warning("Blue VO!CE settings read failed: %s", e)
             current = {}
         st["voice_preset"] = logi_audiofx.match_voice_preset(current, self._voice_presets())
+        # Logitech's effect drivers: back them up whenever they're installed (G HUB's uninstaller deletes
+        # them), and offer to restore them when they're gone but a backup exists.
+        try:
+            if logi_drivers.needs_backup():
+                n = logi_drivers.backup()
+                log.info("backed up %d Logitech audio driver packages to %s", n, logi_drivers.BACKUP_DIR)
+            if logi_drivers.installed():
+                st["drivers"] = "installed"
+            else:
+                st["drivers"] = "backup" if logi_drivers.backed_up() else "none"
+        except Exception as e:
+            log.warning("Logitech driver backup check failed: %s", e)
+            st["drivers"] = "unknown"
         # Windows Sonic: offered when the headset is a stereo output (no Logitech audio driver).
         try:
             spk = logi_audiofx.endpoint_id("Speakers")
@@ -409,6 +423,11 @@ class HeadsetCtl(Controller):
             self.mark_away("Not connected")
 
     def apply(self, name, value):
+        if name == "fx_restore":
+            logi_drivers.restore()                 # one permission prompt; raises if Windows refused
+            log.info("Logitech audio drivers restored from %s", logi_drivers.BACKUP_DIR)
+            self._read_fx()                        # new endpoints -> the panel offers "Set up" next
+            return
         if name == "fx_setup":
             v = self._setup_values()
             setup = {k: v[k] for k in ("surround", "room", "stereo", "bluevoice", "voice") if k in v}
@@ -1015,6 +1034,8 @@ class Panel:
         # stereo headset = no Logitech audio driver) and DTS (Logitech's driver, headset is 7.1).
         fx_area = tk.Frame(snd, bg=C["card"])
         fx_area.pack(fill="x")
+        restore_snd = tk.Frame(fx_area, bg=C["card"])  # holds a "restore" button while it's needed
+        restore_snd.pack(fill="x")
         sonic_box = tk.Frame(fx_area, bg=C["card"])
         self._label(sonic_box, "Surround sound (Windows Sonic, built into Windows)", muted=True, anchor="w").pack(
             fill="x", pady=(self.px(8), 0))
@@ -1073,6 +1094,17 @@ class Panel:
                                       command=lambda: self.hub.set("headset", "bluevoice", bluevoice.get()),
                                       **self._check_style())
         cb_bluevoice.pack(anchor="w")
+        restore_mic = tk.Frame(micp, bg=C["card"])
+        restore_mic.pack(fill="x")
+        for box in (restore_snd, restore_mic):
+            self._label(box, "Logitech's DTS surround and Blue VO!CE drivers aren't installed (G HUB's "
+                             "uninstaller removes them). Device Hub kept a copy; restore it? Windows asks "
+                             "for permission once.",
+                        muted=True, size=8, anchor="w", justify="left", wraplength=self.px(280)).pack(fill="x")
+            self._flat_button(box, "Restore DTS surround and Blue VO!CE",
+                              lambda: self.hub.set("headset", "fx_restore", True), small=True).pack(
+                anchor="w", pady=(self.px(2), self.px(4)))
+        parts.update(restore_boxes=(restore_snd, restore_mic), restore_shown=None)
         setup_mic = tk.Frame(micp, bg=C["card"])
         setup_mic.pack(fill="x")
         for box in (setup_snd, setup_mic):
@@ -1113,6 +1145,20 @@ class Panel:
                      mic=mic, mic_mute=mic_mute, nr=nr, cb_nr=cb_nr, surround=surround, cb_surround=cb_surround,
                      room_btns=room_btns, stereo_btns=stereo_btns, bluevoice=bluevoice, cb_bluevoice=cb_bluevoice)
         show("Sound")
+
+    def _show_boxes(self, p, kind: str, show: bool):
+        """Show or hide the note + button inside the '<kind>_boxes' frames (they collapse when empty)."""
+        if p[f"{kind}_shown"] == show:
+            return
+        p[f"{kind}_shown"] = show
+        for box in p[f"{kind}_boxes"]:
+            for w in box.winfo_children():
+                if not show:
+                    w.pack_forget()
+                elif isinstance(w, self.tk.Label):
+                    w.pack(fill="x")
+                else:
+                    w.pack(anchor="w", pady=(self.px(2), self.px(4)))
 
     def _toggle_voice_list(self):
         p = self.cards["headset"]
@@ -1290,17 +1336,9 @@ class Panel:
                 p["dts_box"].pack(fill="x")
         p["sonic"].set(bool(st.get("sonic")))
         need = bool(st.get("fx_setup"))
-        if p["setup_shown"] != need:
-            p["setup_shown"] = need
-            for box in p["setup_boxes"]:
-                for w in box.winfo_children():
-                    if not need:
-                        w.pack_forget()
-                    elif isinstance(w, self.tk.Label):
-                        w.pack(fill="x")
-                    else:
-                        w.pack(anchor="w", pady=(self.px(2), self.px(4)))
-        if need or not show_dts:
+        self._show_boxes(p, "setup", need)
+        self._show_boxes(p, "restore", st.get("drivers") == "backup")
+        if need or not show_dts or st.get("drivers") == "backup":
             p["fx_note"].configure(text="")
         elif "surround" not in st:
             p["fx_note"].configure(text="Surround isn't available: Logitech's DTS audio effect isn't installed.")

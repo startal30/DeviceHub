@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -631,6 +632,48 @@ class VoicePresetTests(unittest.TestCase):
                 S.set_sonic("{0.0.0.00000000}.{x}", False, timeout_s=0.3)
         finally:
             win_policy.set_values, S.is_on = orig
+
+    def test_driver_backup_and_restore_command(self):
+        from devices import logi_drivers as D
+        root = tempfile.mkdtemp()
+        store, backup = os.path.join(root, "store"), os.path.join(root, "backup")
+
+        def package(name, files=("x.inf", "x.cat", "fx.dll")):
+            d = os.path.join(store, name)
+            os.makedirs(d)
+            for f in files:
+                open(os.path.join(d, f), "wb").write(b"data")
+
+        package("logi_audio.inf_amd64_aaaa", ("logi_audio.inf", "logi_audio.cat", "usb.sys"))
+        package("logi_audio_hx2e_render_apo.inf_amd64_bbbb")
+        package("logi_audio_broken.inf_amd64_cccc", ("x.inf",))          # no signed catalog: skipped
+        package("other_vendor.inf_amd64_dddd")                            # not Logitech audio: skipped
+        orig = (D.STORE, D.BACKUP_DIR)
+        D.STORE, D.BACKUP_DIR = store, backup
+        try:
+            self.assertEqual(D.installed(), ["logi_audio.inf_amd64_aaaa", "logi_audio_hx2e_render_apo.inf_amd64_bbbb"])
+            self.assertTrue(D.needs_backup())
+            self.assertEqual(D.backup(), 2)
+            self.assertFalse(D.needs_backup())
+            self.assertEqual(D.backed_up(), D.installed())
+            self.assertTrue(os.path.isfile(os.path.join(backup, "logi_audio.inf_amd64_aaaa", "usb.sys")))
+            package("logi_audio.inf_amd64_eeee", ("logi_audio.inf", "logi_audio.cat"))   # G HUB updated it
+            self.assertTrue(D.needs_backup())
+            exe, args = D.restore_command()
+            self.assertTrue(exe.lower().endswith("cmd.exe"))
+            self.assertEqual(args.count("pnputil.exe"), 2)                  # one per backed-up .inf
+            self.assertIn("/add-driver", args)
+            self.assertNotIn("other_vendor", args)
+            self.assertTrue(all(backup in part for part in args.split('"') if part.endswith(".inf")))
+            shutil.rmtree(store)
+            os.makedirs(store)
+            self.assertEqual(D.installed(), [])                             # G HUB uninstalled
+            self.assertEqual(len(D.backed_up()), 2)                         # the backup survives
+            D.BACKUP_DIR = os.path.join(root, "nothing")
+            with self.assertRaises(D.DriverError):
+                D.restore_command()
+        finally:
+            D.STORE, D.BACKUP_DIR = orig
 
     def test_import_from_ghub(self):
         doc = {"cards": [

@@ -517,7 +517,13 @@ def apply_elevated(name: str, value, timeout_ms: int = 60_000):
         exe = sys.executable.replace("pythonw.exe", "python.exe")
         main = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "device_hub.py")
         args = f'"{main}" --audiofx {arg}'
+    code = run_elevated(exe, args, timeout_ms)
+    if code != 0:
+        raise FxError(f"helper failed (exit code {code})")
 
+
+def run_elevated(exe: str, args: str, timeout_ms: int = 60_000) -> int:
+    """Start a program with administrator rights (UAC prompt), wait for it, return its exit code."""
     class SHELLEXECUTEINFOW(ctypes.Structure):
         _fields_ = [("cbSize", ctypes.c_ulong), ("fMask", ctypes.c_ulong), ("hwnd", ctypes.c_void_p),
                     ("lpVerb", ctypes.c_wchar_p), ("lpFile", ctypes.c_wchar_p), ("lpParameters", ctypes.c_wchar_p),
@@ -536,8 +542,7 @@ def apply_elevated(name: str, value, timeout_ms: int = 60_000):
     code = ctypes.c_ulong(1)
     k32.GetExitCodeProcess(ctypes.c_void_p(info.hProcess), ctypes.byref(code))
     k32.CloseHandle(ctypes.c_void_p(info.hProcess))
-    if code.value != 0:
-        raise FxError(f"helper failed (exit code {code.value})")
+    return code.value
 
 
 def run_helper(arg: str) -> int:
