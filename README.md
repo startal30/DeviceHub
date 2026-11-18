@@ -6,7 +6,7 @@ One tray app for three devices, replacing AULA's software, Logitech G HUB and Lo
 |---|---|---|
 | AULA F99 Pro keyboard (2.4GHz dongle, Bluetooth, USB cable) | ✅ | Lighting effect, brightness, speed, colour, sleep timer (dongle or cable only) |
 | Logitech MX Master 3S (Bolt receiver) | ✅ | Pointer speed (DPI), SmartShift, scroll direction, smooth scrolling |
-| Logitech PRO X 2 LIGHTSPEED headset | ✅ | Sidetone, mic level & mute, mic noise reduction, auto-off timer, 5-band EQ + G HUB's presets |
+| Logitech PRO X 2 LIGHTSPEED headset | ✅ | DTS surround (+ modes), Blue VO!CE, sidetone, mic level & mute, mic noise reduction, auto-off timer, 5-band EQ + G HUB's presets |
 
 The tray icon shows the **lowest** battery of the three (green > 40%, yellow 21–40%, red ≤ 20%,
 blue = charging, `F` = full, `--` = nothing found). Hover it to see all three; click it to open the panel.
@@ -57,9 +57,27 @@ Run it again any time from the tray menu: **Import headset settings from G HUB**
 The PRO X 2 has **no mic-gain setting of its own**, so the panel's mic level is the Windows recording level
 for "Microphone (PRO X 2 LIGHTSPEED)", the same as the slider in Windows Sound settings.
 
-These **can't** be replaced, because they're audio processing that runs inside G HUB on the PC:
-**DTS surround** and **Blue VO!CE**. Without G HUB they're off. Windows Sonic
-(Settings → Sound → speakers → Spatial audio) can stand in for surround.
+## DTS surround and Blue VO!CE
+Neither runs inside G HUB. They're Windows audio effects from Logitech's driver packages, attached to
+the PRO X 2 endpoints and run by the Windows audio engine:
+- speakers: "Logitech HX2E Surround Sound Effect" (DTS Headphone:X 2.0)
+- microphone: "Logitech Blue VO!CE 2.0 Effect" (DTS ClearVoice 2)
+
+G HUB only stores their settings. Recording what G HUB changes for each switch showed:
+- **Surround:** `HKLM\SOFTWARE\Logitech\GHUB\Audio Devices\<speaker endpoint>` → `DTSon` (1/0),
+  `SelectedSurround` (0 = DTS, 2 = off), `DTSroomModel` (Entertainment/Gaming/Sports = 0/1/2),
+  `DTSstereoModel` (Off/Front/Wide/Traditional = 0/1/2/3). Writing speaker property
+  `{d57f93ae-4210-46b3-acfc-90437b666152},1` then tells the effect to re-read them.
+- **Blue VO!CE:** microphone property `{b4d50347-1450-477f-b173-56b14770589a},1` = 1/0. The other ~70
+  properties in that set are the voice chain settings; Device Hub leaves them as G HUB set them.
+
+Device Hub flips the same switches; no Logitech or DTS code is copied. Both live in admin-only places, so
+**Windows asks for permission each time** you change surround or Blue VO!CE, and a small helper
+(`DeviceHub.exe --audiofx name=value`) applies just that change. They're not saved for re-applying, so
+reconnecting a device never causes surprise permission prompts; the settings persist on their own.
+
+Verified on a real PRO X 2 with G HUB closed: turning surround off and on was audible immediately, and
+Blue VO!CE's live meters stopped when it was turned off and resumed when it was turned on.
 
 ## Keyboard lighting
 Lighting settings live in the keyboard's 128-byte settings page (protocol from aula-f99-pro-hub).
@@ -70,7 +88,9 @@ the keyboard accepted it.
 
 ## Removing G HUB, AULA's app and OpenLogi
 Device Hub covers everything they did for these three devices **except**:
-- **DTS surround and Blue VO!CE** (see above).
+- **Possibly DTS surround and Blue VO!CE.** The effects are separate Logitech driver packages, but they
+  were probably installed by G HUB, so its uninstaller may remove them. Check after uninstalling: if the
+  surround and Blue VO!CE switches in Device Hub turn grey, the effects are gone.
 - **Firmware updates.** G HUB is the only way to update the headset and its dongle, and AULA's app
   updates the keyboard. To update firmware later, reinstall the app, update, and uninstall it again.
 - **Keyboard per-key colours, key remapping and macros** (lighting effects are covered). They're stored
@@ -97,6 +117,7 @@ Uninstalling G HUB also removes its background updater service (`LGHUBUpdaterSer
 - `devices/aula.py`: AULA F99 Pro battery
 - `devices/aula_lighting.py`: AULA lighting effects and sleep timer
 - `devices/win_mic.py`: Windows mic level and mute
+- `devices/logi_audiofx.py`: DTS surround and Blue VO!CE (Logitech's installed audio effects)
 - `devices/logi_mouse.py`: Logitech HID++ 2.0 (battery, DPI, SmartShift, scroll wheel)
 - `devices/logi_headset.py`: PRO X 2 "Centurion" protocol (battery, sidetone, auto-off, EQ)
 

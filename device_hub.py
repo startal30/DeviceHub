@@ -20,7 +20,7 @@ from logging.handlers import RotatingFileHandler
 
 from PIL import Image, ImageDraw, ImageFont
 
-from devices import aula, aula_lighting, logi_headset, logi_mouse, win_mic
+from devices import aula, aula_lighting, logi_audiofx, logi_headset, logi_mouse, win_mic
 from estimate import Estimator, fmt_duration
 import ghub_import
 
@@ -277,6 +277,22 @@ class HeadsetCtl(Controller):
         else:
             st.pop("mic_level", None)
             st.pop("mic_mute", None)
+        self._read_fx()
+
+    FX_NAMES = ("surround", "room", "stereo", "bluevoice")
+
+    def _read_fx(self):
+        st = self.state.settings
+        try:
+            fx = logi_audiofx.read_state()
+        except Exception as e:
+            log.warning("audio effects read failed: %s", e)
+            fx = {}
+        for name in self.FX_NAMES:
+            if name in fx:
+                st[name] = fx[name]
+            else:
+                st.pop(name, None)
 
     def _write(self, name, value):
         if name == "sidetone":
@@ -328,6 +344,12 @@ class HeadsetCtl(Controller):
             self.mark_away("Not connected")
 
     def apply(self, name, value):
+        if name in self.FX_NAMES:
+            # Windows audio effects: needs admin, so a UAC prompt appears. Not saved for re-applying,
+            # because re-applying would mean surprise permission prompts; the setting persists anyway.
+            logi_audiofx.apply_elevated(name, int(value))
+            self._read_fx()
+            return
         if self.hs is None or not self.state.online:
             raise RuntimeError("headset is off - turn it on and try again")
         self._write(name, value)
@@ -811,46 +833,39 @@ class Panel:
 
     def _build_headset_settings(self, box, parts):
         tk = self.tk
-        self._label(box, "Sidetone (hear your own voice)", muted=True, anchor="w").pack(fill="x", pady=(self.px(8), 0))
-        st = self._scale(box, "sidetone", 0, 100, 1, fmt="{}%")
-        st.pack(fill="x")
-        self._on_release(st, "sidetone", "headset", "sidetone", int)
+        # Three tabs keep the panel short enough for any screen.
+        tabbar = tk.Frame(box, bg=C["card"])
+        tabbar.pack(fill="x", pady=(self.px(8), 0))
+        pages = {name: tk.Frame(box, bg=C["card"]) for name in ("Sound", "Mic", "Power")}
+        tab_btns = {}
 
-        self._label(box, "Microphone", muted=True, anchor="w").pack(fill="x", pady=(self.px(8), 0))
-        mic = self._scale(box, "mic_level", 0, 100, 1, fmt="{}%")
-        mic.pack(fill="x")
-        self._on_release(mic, "mic_level", "headset", "mic_level", int)
-        mic_mute, nr = tk.BooleanVar(), tk.BooleanVar()
-        cb_mute = tk.Checkbutton(box, text="Mute microphone", variable=mic_mute,
-                                 command=lambda: self.hub.set("headset", "mic_mute", mic_mute.get()),
-                                 **self._check_style())
-        cb_mute.pack(anchor="w")
-        cb_nr = tk.Checkbutton(box, text="Noise reduction (in the headset)", variable=nr,
-                               command=lambda: self.hub.set("headset", "noise_reduction", nr.get()),
-                               **self._check_style())
-        cb_nr.pack(anchor="w")
-        parts.update(mic=mic, mic_mute=mic_mute, nr=nr, cb_nr=cb_nr)
+        def show(name):
+            for n, f in pages.items():
+                f.pack_forget()
+                self._paint_button(tab_btns[n], n == name)
+            pages[name].pack(fill="x")
+            parts["tab"] = name
+            self.place()
 
-        self._label(box, "Turn off when idle", muted=True, anchor="w").pack(fill="x", pady=(self.px(8), self.px(2)))
-        row = tk.Frame(box, bg=C["card"])
-        row.pack(fill="x")
-        sleep_btns = {}
-        for minutes, text in AUTOSLEEP_CHOICES:
-            b = self._flat_button(row, text, lambda m=minutes: self.hub.set("headset", "autosleep", m), small=True)
+        for name in pages:
+            b = self._flat_button(tabbar, name, lambda n=name: show(n), small=True)
             b.pack(side="left", padx=(0, self.px(4)))
-            sleep_btns[minutes] = b
+            tab_btns[name] = b
+        parts.update(tab_btns=tab_btns, tab="Sound")
 
-        self._label(box, "Equalizer", muted=True, anchor="w").pack(fill="x", pady=(self.px(8), self.px(2)))
-        prow = tk.Frame(box, bg=C["card"])
+        # ---- Sound: EQ + DTS surround
+        snd = pages["Sound"]
+        self._label(snd, "Equalizer", muted=True, anchor="w").pack(fill="x", pady=(self.px(8), self.px(2)))
+        prow = tk.Frame(snd, bg=C["card"])
         prow.pack(fill="x")
         preset_btns = {}
         for name, gains in logi_headset.EQ_PRESETS.items():
             b = self._flat_button(prow, name, lambda g=gains: self.hub.set("headset", "eq", list(g)), small=True)
             b.pack(side="left", padx=(0, self.px(4)))
             preset_btns[name] = b
-        custom = tk.Frame(box, bg=C["card"])
+        custom = tk.Frame(snd, bg=C["card"])
         custom.pack(fill="x")
-        bands = tk.Frame(box, bg=C["card"])
+        bands = tk.Frame(snd, bg=C["card"])
         bands.pack(fill="x", pady=(self.px(4), 0))
         eq_scales, eq_labels = [], []
         for i in range(5):
@@ -863,8 +878,74 @@ class Panel:
             lab.pack()
             eq_scales.append(s)
             eq_labels.append(lab)
+
+        self._label(snd, "Surround sound (DTS Headphone:X 2.0)", muted=True, anchor="w").pack(
+            fill="x", pady=(self.px(8), 0))
+        surround = tk.BooleanVar()
+        cb_surround = tk.Checkbutton(snd, text="Enable surround sound", variable=surround,
+                                     command=lambda: self.hub.set("headset", "surround", surround.get()),
+                                     **self._check_style())
+        cb_surround.pack(anchor="w")
+        room_row = tk.Frame(snd, bg=C["card"])
+        room_row.pack(fill="x", pady=(self.px(2), 0))
+        room_btns = {}
+        for val, text in logi_audiofx.ROOM_MODELS.items():
+            b = self._flat_button(room_row, text, lambda v=val: self.hub.set("headset", "room", v), small=True)
+            b.pack(side="left", padx=(0, self.px(4)))
+            room_btns[val] = b
+        self._label(snd, "Super Stereo (for stereo sources)", muted=True, anchor="w").pack(
+            fill="x", pady=(self.px(4), self.px(2)))
+        stereo_row = tk.Frame(snd, bg=C["card"])
+        stereo_row.pack(fill="x")
+        stereo_btns = {}
+        for val, text in logi_audiofx.STEREO_MODELS.items():
+            b = self._flat_button(stereo_row, text, lambda v=val: self.hub.set("headset", "stereo", v), small=True)
+            b.pack(side="left", padx=(0, self.px(4)))
+            stereo_btns[val] = b
+        fx_note = self._label(snd, "Windows asks for permission when you change surround or Blue VO!CE.",
+                              muted=True, size=8, anchor="w", justify="left", wraplength=self.px(280))
+        fx_note.pack(fill="x", pady=(self.px(4), 0))
+
+        # ---- Mic: level, mute, noise reduction, Blue VO!CE, sidetone
+        micp = pages["Mic"]
+        self._label(micp, "Microphone level", muted=True, anchor="w").pack(fill="x", pady=(self.px(8), 0))
+        mic = self._scale(micp, "mic_level", 0, 100, 1, fmt="{}%")
+        mic.pack(fill="x")
+        self._on_release(mic, "mic_level", "headset", "mic_level", int)
+        mic_mute, nr, bluevoice = tk.BooleanVar(), tk.BooleanVar(), tk.BooleanVar()
+        tk.Checkbutton(micp, text="Mute microphone", variable=mic_mute,
+                       command=lambda: self.hub.set("headset", "mic_mute", mic_mute.get()),
+                       **self._check_style()).pack(anchor="w")
+        cb_nr = tk.Checkbutton(micp, text="Noise reduction (in the headset)", variable=nr,
+                               command=lambda: self.hub.set("headset", "noise_reduction", nr.get()),
+                               **self._check_style())
+        cb_nr.pack(anchor="w")
+        cb_bluevoice = tk.Checkbutton(micp, text="Blue VO!CE voice processing", variable=bluevoice,
+                                      command=lambda: self.hub.set("headset", "bluevoice", bluevoice.get()),
+                                      **self._check_style())
+        cb_bluevoice.pack(anchor="w")
+        self._label(micp, "Sidetone (hear your own voice)", muted=True, anchor="w").pack(
+            fill="x", pady=(self.px(8), 0))
+        st = self._scale(micp, "sidetone", 0, 100, 1, fmt="{}%")
+        st.pack(fill="x")
+        self._on_release(st, "sidetone", "headset", "sidetone", int)
+
+        # ---- Power: auto-off
+        pwr = pages["Power"]
+        self._label(pwr, "Turn off when idle", muted=True, anchor="w").pack(fill="x", pady=(self.px(8), self.px(2)))
+        row = tk.Frame(pwr, bg=C["card"])
+        row.pack(fill="x")
+        sleep_btns = {}
+        for minutes, text in AUTOSLEEP_CHOICES:
+            b = self._flat_button(row, text, lambda m=minutes: self.hub.set("headset", "autosleep", m), small=True)
+            b.pack(side="left", padx=(0, self.px(4)))
+            sleep_btns[minutes] = b
+
         parts.update(sidetone=st, sleep_btns=sleep_btns, preset_btns=preset_btns, eq_scales=eq_scales,
-                     eq_labels=eq_labels, custom=custom, custom_btns={}, custom_names=None)
+                     eq_labels=eq_labels, custom=custom, custom_btns={}, custom_names=None,
+                     mic=mic, mic_mute=mic_mute, nr=nr, cb_nr=cb_nr, surround=surround, cb_surround=cb_surround,
+                     room_btns=room_btns, stereo_btns=stereo_btns, bluevoice=bluevoice, cb_bluevoice=cb_bluevoice)
+        show("Sound")
 
     def _build_custom_presets(self, p, presets: dict):
         for w in p["custom"].winfo_children():
@@ -965,6 +1046,15 @@ class Panel:
         p["mic_mute"].set(bool(st.get("mic_mute")))
         p["nr"].set(bool(st.get("noise_reduction")))
         p["cb_nr"].configure(state="normal" if "noise_reduction" in st else "disabled")
+        # DTS surround / Blue VO!CE (Logitech's installed audio effects)
+        p["surround"].set(bool(st.get("surround")))
+        p["cb_surround"].configure(state="normal" if "surround" in st else "disabled")
+        for val, b in p["room_btns"].items():
+            self._paint_button(b, st.get("surround") and st.get("room") == val)
+        for val, b in p["stereo_btns"].items():
+            self._paint_button(b, st.get("stereo") == val)
+        p["bluevoice"].set(bool(st.get("bluevoice")))
+        p["cb_bluevoice"].configure(state="normal" if "bluevoice" in st else "disabled")
         for minutes, b in p["sleep_btns"].items():
             self._paint_button(b, st.get("autosleep") == minutes)
         gains = st.get("eq")
@@ -1185,7 +1275,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--once", action="store_true", help="print every device's battery and settings, then exit")
     ap.add_argument("--tray", action="store_true", help="start in the tray without opening the panel")
+    ap.add_argument("--audiofx", metavar="NAME=VALUE", help=argparse.SUPPRESS)   # elevated helper (UAC)
     args = ap.parse_args()
+    if args.audiofx:
+        from devices import logi_audiofx
+        sys.exit(logi_audiofx.run_helper(args.audiofx))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=[
         RotatingFileHandler(os.path.join(DATA_DIR, "log.txt"), maxBytes=300_000, backupCount=1, encoding="utf-8")])
 

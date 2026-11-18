@@ -419,3 +419,31 @@ class LightingTests(unittest.TestCase):
         with self.assertRaises(AL.ReadError):
             AL.write("brightness", 1)
         self.assertEqual(dev.writes, 0)
+
+
+# ----------------------------------------------------------------------------- DTS surround / Blue VO!CE
+
+from devices import logi_audiofx as FX   # noqa: E402
+
+
+class AudioFxTests(unittest.TestCase):
+    def test_helper_rejects_bad_input(self):
+        self.assertEqual(FX.run_helper("nonsense"), 2)
+        self.assertEqual(FX.run_helper("unknown=1"), 2)
+
+    def test_write_validates_names_and_modes(self):
+        orig = FX.endpoint_id
+        FX.endpoint_id = lambda kind: "{0.0.0.00000000}.{test}"
+        try:
+            with self.assertRaises(FX.FxError):
+                FX._write("unknown", 1)
+            with self.assertRaises(FX.FxError):
+                FX._write("room", 7)                  # only 0..2 exist
+            with self.assertRaises(FX.FxError):
+                FX._write("stereo", -1)               # only 0..3 exist
+        finally:
+            FX.endpoint_id = orig
+
+    def test_mode_tables_match_ghub(self):
+        self.assertEqual(FX.ROOM_MODELS[1], "Gaming")           # DTSroomModel=1 while G HUB showed Gaming
+        self.assertEqual(FX.STEREO_MODELS[0], "Off")            # DTSstereoModel=0 while G HUB showed Off
