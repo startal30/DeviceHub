@@ -107,7 +107,8 @@ they persist on their own.
 
 Verified on a real PRO X 2 with G HUB closed: surround off/on was audible immediately; Super Stereo
 Wide → Off via the no-prompt registry write was audible immediately; Blue VO!CE's live meters stopped
-when it was turned off and resumed when it was turned on.
+when it was turned off and resumed when it was turned on; applying a Blue VO!CE preset from Device Hub
+set all 40 of its values on the mic (read back afterwards).
 
 ## Keyboard lighting
 Lighting settings live in the keyboard's 128-byte settings page (protocol from aula-f99-pro-hub).
