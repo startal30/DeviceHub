@@ -6,7 +6,7 @@ One tray app for three devices, replacing AULA's software, Logitech G HUB and Lo
 |---|---|---|
 | AULA F99 Pro keyboard (2.4GHz dongle, Bluetooth, USB cable) | ✅ | – |
 | Logitech MX Master 3S (Bolt receiver) | ✅ | Pointer speed (DPI), SmartShift, scroll direction, smooth scrolling |
-| Logitech PRO X 2 LIGHTSPEED headset | ✅ | Sidetone, auto-off timer, 5-band EQ + G HUB's presets |
+| Logitech PRO X 2 LIGHTSPEED headset | ✅ | Sidetone, mic level & mute, mic noise reduction, auto-off timer, 5-band EQ + G HUB's presets |
 
 The tray icon shows the **lowest** battery of the three (green > 40%, yellow 21–40%, red ≤ 20%,
 blue = charging, `F` = full, `--` = nothing found). Hover it to see all three; click it to open the panel.
@@ -53,9 +53,25 @@ The EQ, sidetone and auto-off that G HUB last set are stored **in the headset it
 working without G HUB. Device Hub saves them and puts them back if the headset ever resets.
 Run it again any time from the tray menu: **Import headset settings from G HUB**.
 
-These **can't** be imported, because they're audio processing that runs inside G HUB on the PC, not
-settings in the headset: **DTS surround, Blue VO!CE, noise reduction and mic gain**. Quitting G HUB
-turns them off. Windows' own sound settings can set mic level, and Windows Sonic can stand in for surround.
+**Mic noise reduction** is a setting stored in the headset (feature `0x0602`), so Device Hub controls it.
+The PRO X 2 has **no mic-gain setting of its own**, so the panel's mic level is the Windows recording level
+for "Microphone (PRO X 2 LIGHTSPEED)", the same as the slider in Windows Sound settings.
+
+These **can't** be replaced, because they're audio processing that runs inside G HUB on the PC:
+**DTS surround** and **Blue VO!CE**. Without G HUB they're off. Windows Sonic
+(Settings → Sound → speakers → Spatial audio) can stand in for surround.
+
+## Removing G HUB, AULA's app and OpenLogi
+Device Hub covers everything they did for these three devices **except**:
+- **DTS surround and Blue VO!CE** (see above).
+- **Firmware updates.** G HUB is the only way to update the headset and its dongle, and AULA's app
+  updates the keyboard. To update firmware later, reinstall the app, update, and uninstall it again.
+- **Keyboard lighting, key remapping and macros.** They're stored in the keyboard, so your current setup
+  keeps working; you just can't change it without AULA's app.
+- **Mouse buttons and gestures.** No Logitech mouse app is installed (no Options+), so they already run
+  on the mouse's defaults.
+
+Uninstalling G HUB also removes its background updater service (`LGHUBUpdaterService`).
 
 ## Notes
 - **Settings you change here are remembered** and put back automatically when a device reconnects

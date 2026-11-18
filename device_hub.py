@@ -20,7 +20,7 @@ from logging.handlers import RotatingFileHandler
 
 from PIL import Image, ImageDraw, ImageFont
 
-from devices import aula, logi_headset, logi_mouse
+from devices import aula, logi_headset, logi_mouse, win_mic
 from estimate import Estimator, fmt_duration
 import ghub_import
 
@@ -240,6 +240,23 @@ class HeadsetCtl(Controller):
         st["eq"] = [g for _, g, _ in eq]
         st["eq_freqs"] = [f for f, _, _ in eq]
         st["custom_presets"] = dict(self.cfg.get("headset_presets", {}))
+        try:
+            st["noise_reduction"] = h.get_noise_reduction()
+        except logi_headset.HeadsetError:
+            st.pop("noise_reduction", None)
+        try:
+            mic = win_mic.get_mic()
+        except Exception as e:
+            log.warning("windows mic read failed: %s", e)
+            mic = None
+        if bool(mic) != getattr(self, "_mic_seen", None):
+            self._mic_seen = bool(mic)
+            log.info("windows mic %s", f"found: level {mic[0]}%, muted={mic[1]}" if mic else "not found")
+        if mic:
+            st["mic_level"], st["mic_mute"] = mic
+        else:
+            st.pop("mic_level", None)
+            st.pop("mic_mute", None)
 
     def _write(self, name, value):
         if name == "sidetone":
@@ -248,6 +265,12 @@ class HeadsetCtl(Controller):
             self.hs.set_autosleep(int(value))
         elif name == "eq":
             self.hs.set_eq([int(v) for v in value])
+        elif name == "noise_reduction":
+            self.hs.set_noise_reduction(bool(value))
+        elif name == "mic_level":
+            win_mic.set_mic_level(int(value))
+        elif name == "mic_mute":
+            win_mic.set_mic_mute(bool(value))
 
     def _reapply(self):
         st = self.state.settings
@@ -696,6 +719,21 @@ class Panel:
         st.pack(fill="x")
         self._on_release(st, "sidetone", "headset", "sidetone", int)
 
+        self._label(box, "Microphone", muted=True, anchor="w").pack(fill="x", pady=(self.px(8), 0))
+        mic = self._scale(box, "mic_level", 0, 100, 1, fmt="{}%")
+        mic.pack(fill="x")
+        self._on_release(mic, "mic_level", "headset", "mic_level", int)
+        mic_mute, nr = tk.BooleanVar(), tk.BooleanVar()
+        cb_mute = tk.Checkbutton(box, text="Mute microphone", variable=mic_mute,
+                                 command=lambda: self.hub.set("headset", "mic_mute", mic_mute.get()),
+                                 **self._check_style())
+        cb_mute.pack(anchor="w")
+        cb_nr = tk.Checkbutton(box, text="Noise reduction (in the headset)", variable=nr,
+                               command=lambda: self.hub.set("headset", "noise_reduction", nr.get()),
+                               **self._check_style())
+        cb_nr.pack(anchor="w")
+        parts.update(mic=mic, mic_mute=mic_mute, nr=nr, cb_nr=cb_nr)
+
         self._label(box, "Turn off when idle", muted=True, anchor="w").pack(fill="x", pady=(self.px(8), self.px(2)))
         row = tk.Frame(box, bg=C["card"])
         row.pack(fill="x")
@@ -824,6 +862,10 @@ class Panel:
     def _update_headset(self, p, s):
         st = s.settings
         self._set_scale("sidetone", p["sidetone"], st.get("sidetone"))
+        self._set_scale("mic_level", p["mic"], st.get("mic_level"))
+        p["mic_mute"].set(bool(st.get("mic_mute")))
+        p["nr"].set(bool(st.get("noise_reduction")))
+        p["cb_nr"].configure(state="normal" if "noise_reduction" in st else "disabled")
         for minutes, b in p["sleep_btns"].items():
             self._paint_button(b, st.get("autosleep") == minutes)
         gains = st.get("eq")

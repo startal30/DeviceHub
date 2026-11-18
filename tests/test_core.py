@@ -81,11 +81,12 @@ class AulaTests(unittest.TestCase):
 class FakeHeadset:
     """Simulates the PRO X 2 dongle + headset: bridge at index 3, Centurion fragments, ack + reply."""
 
-    FEATURES = {H.F_BATTERY: 4, H.F_AUTOSLEEP: 6, H.F_SIDETONE: 7, H.F_EQ: 9}
+    FEATURES = {H.F_BATTERY: 4, H.F_AUTOSLEEP: 6, H.F_SIDETONE: 7, H.F_MIC_NR: 8, H.F_EQ: 9}
 
     def __init__(self):
         self.out, self.partial, self.writes = [], b"", []
         self.sidetone = 47
+        self.nr = 1
         self.eq = [5, 3, 1, 2, 3]
         self.frames = []
 
@@ -131,6 +132,11 @@ class FakeHeadset:
             return bytes([1, 1, self.sidetone])
         if sub == 6:
             return bytes([0])
+        if sub == 8:                                         # mic noise reduction: read fn 0, write fn 0x10
+            if fn == 0x10:
+                self.nr = params[0]
+                return b""
+            return bytes([self.nr])
         if sub == 9:
             if fn == 0x10:
                 bands = b"".join(bytes([f >> 8, f & 0xFF, g & 0xFF, 2])
@@ -171,6 +177,12 @@ class HeadsetTests(unittest.TestCase):
         h.set_sidetone(40)
         self.assertEqual(fake.writes[-1], ("sidetone", bytes([1, 40, 1])))
         self.assertEqual(h.get_sidetone(), 40)
+
+    def test_noise_reduction(self):
+        h = make_headset(FakeHeadset())
+        self.assertTrue(h.get_noise_reduction())
+        h.set_noise_reduction(False)
+        self.assertFalse(h.get_noise_reduction())
 
     def test_eq_write_is_fragmented(self):
         fake = FakeHeadset()

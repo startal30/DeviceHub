@@ -28,6 +28,7 @@ SW = 0x01
 
 F_ROOT, F_BRIDGE = 0x0000, 0x0003
 F_BATTERY, F_AUTOSLEEP, F_SIDETONE, F_EQ = 0x0104, 0x0108, 0x0604, 0x0636
+F_MIC_NR = 0x0602        # HEADSET_MIC_SNR: mic noise reduction on/off (Solaar), = G HUB "noise reduction"
 
 DEBUG = False
 SIDETONE_MAX = 100
@@ -182,6 +183,12 @@ class Headset:
     def set_sidetone(self, level: int):
         level = max(0, min(SIDETONE_MAX, int(level)))
         self.call(F_SIDETONE, 0x10, bytes([0x01, level, 0x01]))
+
+    def get_noise_reduction(self) -> bool:
+        return bool(self.call(F_MIC_NR, 0x00)[0])
+
+    def set_noise_reduction(self, on: bool):
+        self.call(F_MIC_NR, 0x10, bytes([1 if on else 0]))
 
     def get_autosleep(self) -> int:
         return self.call(F_AUTOSLEEP, 0x00)[0]
