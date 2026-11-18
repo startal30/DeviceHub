@@ -447,3 +447,16 @@ class AudioFxTests(unittest.TestCase):
     def test_mode_tables_match_ghub(self):
         self.assertEqual(FX.ROOM_MODELS[1], "Gaming")           # DTSroomModel=1 while G HUB showed Gaming
         self.assertEqual(FX.STEREO_MODELS[0], "Off")            # DTSstereoModel=0 while G HUB showed Off
+
+
+class SurroundNoPromptTests(unittest.TestCase):
+    def test_registry_values_match_what_ghub_writes(self):
+        self.assertEqual(FX._surround_values("surround", 1), {"DTSon": 1, "SelectedSurround": 0})
+        self.assertEqual(FX._surround_values("surround", 0), {"DTSon": 0, "SelectedSurround": 2})
+        self.assertEqual(FX._surround_values("stereo", 2), {"DTSstereoModel": 2})
+        self.assertEqual(FX._surround_values("room", 0), {"DTSroomModel": 0})
+        with self.assertRaises(FX.FxError):
+            FX._surround_values("stereo", 9)
+
+    def test_bluevoice_never_uses_the_no_prompt_path(self):
+        self.assertFalse(FX.write_without_prompt("bluevoice", 1))

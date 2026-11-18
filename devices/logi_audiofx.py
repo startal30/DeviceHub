@@ -161,6 +161,51 @@ def _write(name: str, value: int):
         raise FxError(f"unknown setting {name}")
 
 
+SURROUND_VALUES = {"surround": None, "room": ROOM_MODELS, "stereo": STEREO_MODELS}
+
+
+def _surround_values(name: str, value: int) -> dict:
+    if name == "surround":
+        return {"DTSon": 1 if value else 0, "SelectedSurround": 0 if value else 2}
+    table = SURROUND_VALUES[name]
+    if int(value) not in table:
+        raise FxError(f"bad {name} value {value}")
+    return {"DTSroomModel" if name == "room" else "DTSstereoModel": int(value)}
+
+
+def surround_writable() -> bool:
+    """True if tools/allow-surround-without-prompt.ps1 was run, so surround changes need no prompt."""
+    spk = endpoint_id("Speakers")
+    if not spk:
+        return False
+    try:
+        winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, GHUB_KEY + "\\" + spk, 0,
+                       winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY).Close()
+        return True
+    except OSError:
+        return False
+
+
+def write_without_prompt(name: str, value: int) -> bool:
+    """Surround settings with a plain registry write. The DTS effect watches its key and applies changes
+    live (verified on a real PRO X 2: Super Stereo Wide -> Off was audible immediately, no notify write).
+    Returns False if this account isn't allowed to write the key (then use apply_elevated)."""
+    if name not in SURROUND_VALUES:
+        return False
+    spk = endpoint_id("Speakers")
+    if not spk:
+        raise FxError("PRO X 2 speakers not found")
+    values = _surround_values(name, value)
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, GHUB_KEY + "\\" + spk, 0,
+                            winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+            for reg_name, v in values.items():
+                winreg.SetValueEx(k, reg_name, 0, winreg.REG_DWORD, v)
+        return True
+    except PermissionError:
+        return False
+
+
 def is_admin() -> bool:
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())

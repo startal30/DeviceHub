@@ -71,13 +71,23 @@ G HUB only stores their settings. Recording what G HUB changes for each switch s
 - **Blue VO!CE:** microphone property `{b4d50347-1450-477f-b173-56b14770589a},1` = 1/0. The other ~70
   properties in that set are the voice chain settings; Device Hub leaves them as G HUB set them.
 
-Device Hub flips the same switches; no Logitech or DTS code is copied. Both live in admin-only places, so
-**Windows asks for permission each time** you change surround or Blue VO!CE, and a small helper
-(`DeviceHub.exe --audiofx name=value`) applies just that change. They're not saved for re-applying, so
-reconnecting a device never causes surprise permission prompts; the settings persist on their own.
+Device Hub flips the same switches; no Logitech or DTS code is copied. Both live in admin-only places,
+so by default **Windows asks for permission** for each change, and a small helper
+(`DeviceHub.exe --audiofx name=value`) applies just that change.
 
-Verified on a real PRO X 2 with G HUB closed: turning surround off and on was audible immediately, and
-Blue VO!CE's live meters stopped when it was turned off and resumed when it was turned on.
+**Surround without prompts:** the DTS effect watches its registry key and applies changes live, so the
+admin-only notify write isn't needed. Run `tools\allow-surround-without-prompt.ps1` once from an
+administrator PowerShell to give your account write access to that one key; after that, surround
+on/off and its modes change with no prompt. `tools\undo-allow-surround-without-prompt.ps1` reverses it.
+The trade-off: any program running as you could change your surround settings.
+**Blue VO!CE** always needs the prompt: its switch is an endpoint property, which only admins can write.
+
+These settings aren't saved for re-applying, so reconnecting a device never causes a surprise prompt;
+they persist on their own.
+
+Verified on a real PRO X 2 with G HUB closed: surround off/on was audible immediately; Super Stereo
+Wide → Off via the no-prompt registry write was audible immediately; Blue VO!CE's live meters stopped
+when it was turned off and resumed when it was turned on.
 
 ## Keyboard lighting
 Lighting settings live in the keyboard's 128-byte settings page (protocol from aula-f99-pro-hub).

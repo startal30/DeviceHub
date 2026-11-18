@@ -293,6 +293,10 @@ class HeadsetCtl(Controller):
                 st[name] = fx[name]
             else:
                 st.pop(name, None)
+        try:
+            st["surround_no_prompt"] = logi_audiofx.surround_writable()
+        except Exception:
+            st["surround_no_prompt"] = False
 
     def _write(self, name, value):
         if name == "sidetone":
@@ -347,7 +351,8 @@ class HeadsetCtl(Controller):
         if name in self.FX_NAMES:
             # Windows audio effects: needs admin, so a UAC prompt appears. Not saved for re-applying,
             # because re-applying would mean surprise permission prompts; the setting persists anyway.
-            logi_audiofx.apply_elevated(name, int(value))
+            if not logi_audiofx.write_without_prompt(name, int(value)):
+                logi_audiofx.apply_elevated(name, int(value))
             self._read_fx()
             return
         if self.hs is None or not self.state.online:
@@ -902,9 +907,9 @@ class Panel:
             b = self._flat_button(stereo_row, text, lambda v=val: self.hub.set("headset", "stereo", v), small=True)
             b.pack(side="left", padx=(0, self.px(4)))
             stereo_btns[val] = b
-        fx_note = self._label(snd, "Windows asks for permission when you change surround or Blue VO!CE.",
-                              muted=True, size=8, anchor="w", justify="left", wraplength=self.px(280))
+        fx_note = self._label(snd, "", muted=True, size=8, anchor="w", justify="left", wraplength=self.px(280))
         fx_note.pack(fill="x", pady=(self.px(4), 0))
+        parts["fx_note"] = fx_note
 
         # ---- Mic: level, mute, noise reduction, Blue VO!CE, sidetone
         micp = pages["Mic"]
@@ -924,6 +929,8 @@ class Panel:
                                       command=lambda: self.hub.set("headset", "bluevoice", bluevoice.get()),
                                       **self._check_style())
         cb_bluevoice.pack(anchor="w")
+        self._label(micp, "Changing Blue VO!CE asks Windows for permission.", muted=True, size=8,
+                    anchor="w").pack(fill="x")
         self._label(micp, "Sidetone (hear your own voice)", muted=True, anchor="w").pack(
             fill="x", pady=(self.px(8), 0))
         st = self._scale(micp, "sidetone", 0, 100, 1, fmt="{}%")
@@ -1055,6 +1062,13 @@ class Panel:
             self._paint_button(b, st.get("stereo") == val)
         p["bluevoice"].set(bool(st.get("bluevoice")))
         p["cb_bluevoice"].configure(state="normal" if "bluevoice" in st else "disabled")
+        if "surround" not in st:
+            p["fx_note"].configure(text="Surround isn't available: Logitech's DTS audio effect isn't installed.")
+        elif st.get("surround_no_prompt"):
+            p["fx_note"].configure(text="")
+        else:
+            p["fx_note"].configure(text="Windows asks for permission for each surround change. "
+                                        "Run tools\\allow-surround-without-prompt.ps1 once to stop that.")
         for minutes, b in p["sleep_btns"].items():
             self._paint_button(b, st.get("autosleep") == minutes)
         gains = st.get("eq")
