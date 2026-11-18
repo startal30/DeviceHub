@@ -450,10 +450,11 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 def _autostart_cmd() -> str:
+    """--tray: when Windows starts it, stay in the tray instead of opening the panel."""
     if getattr(sys, "frozen", False):
-        return f'"{sys.executable}"'
+        return f'"{sys.executable}" --tray'
     pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-    return f'"{pyw if os.path.exists(pyw) else sys.executable}" "{os.path.abspath(__file__)}"'
+    return f'"{pyw if os.path.exists(pyw) else sys.executable}" "{os.path.abspath(__file__)}" --tray'
 
 
 def _run_value(name: str) -> str | None:
@@ -911,9 +912,10 @@ def work_area() -> tuple[int, int, int, int]:
 # =============================================================================== app
 
 class App:
-    def __init__(self):
+    def __init__(self, show_panel: bool = False):
         import tkinter as tk
         import pystray
+        self.show_panel = show_panel
         self.ui_queue: queue.Queue = queue.Queue()
         self.hub = Hub(on_change=lambda states: self.ui_queue.put(("states", states)))
         self.root = tk.Tk()
@@ -974,6 +976,8 @@ class App:
                     self.icon.title = tooltip(data)
                 elif kind == "toggle":
                     self.panel.toggle()
+                elif kind == "show":
+                    self.panel.show()
                 elif kind == "quit":
                     self.hub.stop.set()
                     self.hub.refresh_now()
@@ -1004,6 +1008,10 @@ class App:
         self.root.after(150, self._pump)
         self.root.after(40, self.panel._animate)
         self.root.after(900, self._blink)
+        threading.Thread(target=_watch_show_requests, args=(lambda: self.ui_queue.put(("show", None)),),
+                         daemon=True, name="show-requests").start()
+        if self.show_panel:
+            self.ui_queue.put(("show", None))
         self.root.mainloop()
 
 
@@ -1012,9 +1020,30 @@ def _single_instance() -> bool:
     return ctypes.windll.kernel32.GetLastError() != 183   # ERROR_ALREADY_EXISTS
 
 
+SHOW_EVENT = f"Local\\{APP_NAME}Show"
+
+
+def _ask_running_copy_to_show():
+    """Launched again (e.g. from the desktop icon) while already running: open the running copy's panel."""
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenEventW(0x0002, False, SHOW_EVENT)          # EVENT_MODIFY_STATE
+    if h:
+        k32.SetEvent(h)
+        k32.CloseHandle(h)
+
+
+def _watch_show_requests(on_show):
+    k32 = ctypes.windll.kernel32
+    h = k32.CreateEventW(None, False, False, SHOW_EVENT)   # auto-reset event
+    while True:
+        if k32.WaitForSingleObject(h, 0xFFFFFFFF) == 0:   # WAIT_OBJECT_0
+            on_show()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--once", action="store_true", help="print every device's battery and settings, then exit")
+    ap.add_argument("--tray", action="store_true", help="start in the tray without opening the panel")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=[
         RotatingFileHandler(os.path.join(DATA_DIR, "log.txt"), maxBytes=300_000, backupCount=1, encoding="utf-8")])
@@ -1035,6 +1064,7 @@ def main():
         return
 
     if not _single_instance():
+        _ask_running_copy_to_show()
         return
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -1047,7 +1077,7 @@ def main():
             log.info("autostart now runs %s", _autostart_cmd())
     except Exception:
         log.exception("autostart migration failed")
-    App().run()
+    App(show_panel=not args.tray).run()
 
 
 if __name__ == "__main__":

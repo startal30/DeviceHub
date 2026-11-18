@@ -189,25 +189,32 @@ class Headset:
     def set_autosleep(self, minutes: int):
         self.call(F_AUTOSLEEP, 0x10, bytes([max(0, min(255, minutes))]))
 
-    def get_eq(self) -> list[tuple[int, int, int]]:
-        """[(frequency Hz, gain dB, q)] for each playback band."""
+    def _eq_params(self) -> tuple[int, list[tuple[int, int, int]]]:
+        """(slot, [(frequency Hz, gain dB, q)]) - reply is [slot, band count, (freq_hi, freq_lo, gain, q)*]."""
         r = self.call(F_EQ, 0x10, b"\x00")
-        n, out = r[1], []
+        slot, n, out = r[0], r[1], []
         for i in range(n):
             o = 2 + i * 4
             if o + 3 >= len(r):
                 break
             g = r[o + 2]
             out.append(((r[o] << 8) | r[o + 1], g - 256 if g > 127 else g, r[o + 3]))
-        return out
+        return slot, out
+
+    def get_eq(self) -> list[tuple[int, int, int]]:
+        """[(frequency Hz, gain dB, q)] for each playback band."""
+        return self._eq_params()[1]
 
     def set_eq(self, gains: list[int]):
-        bands = self.get_eq()
+        # Write to the slot the headset reports (0x80 on a real PRO X 2, the slot G HUB uses).
+        # HeadsetControl writes slot 0: the sound changes, but the headset keeps reporting the old
+        # gains, so any app reading it back (including this one) shows the wrong EQ.
+        slot, bands = self._eq_params()
         if len(gains) != len(bands):
             raise HeadsetError(f"need {len(bands)} gains")
         bands = [(f, max(-12, min(12, int(g))), q) for (f, _, q), g in zip(bands, gains)]
         self.call(F_EQ, 0x00)   # same order as HeadsetControl: info, params, write
-        self.call(F_EQ, 0x20, _eq_payload(0, bands))
+        self.call(F_EQ, 0x20, _eq_payload(slot, bands))
 
 
 # ---------------------------------------------------------------------- EQ maths (from HeadsetControl)

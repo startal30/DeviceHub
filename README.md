@@ -17,15 +17,19 @@ lightning bolt while the device it shows is charging.
 
 **Time left:** no device reports this, so the app measures how fast each battery drains (or charges)
 on your own usage and remembers it across restarts (`%LOCALAPPDATA%\DeviceHub\battery_history.json`).
-It needs at least two 1% changes over 15+ minutes. Until then it shows the maker's rating, marked
+It needs two changes in % at least 5 minutes apart. Until then it shows the maker's rating, marked
 "rated" (MX Master 3S: 70 days per charge; PRO X 2: 50 h of use). The keyboard says "Measuring battery
 life…" until it has data, because AULA publishes no rating.
 
 ## Install / update
 Double-click `build.bat`. It runs the tests, builds the app and installs it to
 `%LOCALAPPDATA%\Programs\DeviceHub\DeviceHub.exe`, which doesn't need Python or this folder.
-Start that exe once; "Start with Windows" then points at it automatically. Run `build.bat` again
-after changing the code, and it replaces the installed copy.
+It also puts a **Device Hub** icon on your desktop. Start the app once; "Start with Windows" then
+points at the installed exe automatically. Run `build.bat` again after changing the code, and it
+replaces the installed copy.
+
+When Windows starts it, it stays quietly in the tray. Opening it from the desktop icon shows the panel,
+and if it's already running, the icon just opens the running copy's panel.
 
 For development:
 ```

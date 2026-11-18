@@ -12,7 +12,7 @@ import json
 import os
 import time
 
-MIN_SPAN_H = 0.25          # need at least 15 min between first and last change to trust a rate
+MIN_SPAN_H = 5 / 60        # need >= 2 changes at least 5 min apart (the MX Master steps in 5% jumps)
 MAX_POINTS = 400
 EMA = 0.35                 # weight of a newly finished segment in the remembered rate
 

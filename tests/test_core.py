@@ -135,9 +135,11 @@ class FakeHeadset:
             if fn == 0x10:
                 bands = b"".join(bytes([f >> 8, f & 0xFF, g & 0xFF, 2])
                                  for f, g in zip((80, 240, 750, 2200, 6600), self.eq))
-                return bytes([0, 5]) + bands
+                return bytes([0x80, 5]) + bands               # real headset reports slot 0x80
             if fn == 0x20:
                 self.writes.append(("eq", bytes(params)))
+                if params[0] == 0x80:                         # only that slot updates what's read back
+                    self.eq = [b - 256 if b > 127 else b for b in params[4:2 + 5 * 4:4]]
             return b"\x00" * 5
         return b""
 
@@ -176,7 +178,10 @@ class HeadsetTests(unittest.TestCase):
         h.set_eq([4, 2, 0, 0, 0])
         name, payload = fake.writes[-1]
         self.assertEqual(name, "eq")
-        self.assertEqual(payload, H._eq_payload(0, [(80, 4, 2), (240, 2, 2), (750, 0, 2), (2200, 0, 2), (6600, 0, 2)]))
+        self.assertEqual(payload, H._eq_payload(0x80, [(80, 4, 2), (240, 2, 2), (750, 0, 2), (2200, 0, 2), (6600, 0, 2)]))
+        self.assertEqual([g for _, g, _ in h.get_eq()], [4, 2, 0, 0, 0])    # read-back shows the new EQ
+        h.set_eq([-1, -1, 4, 3, 2])
+        self.assertEqual([g for _, g, _ in h.get_eq()], [-1, -1, 4, 3, 2])  # negative gains round-trip
         eq_frames = [f for f in fake.frames if f[2] != 0]
         self.assertGreaterEqual(len(eq_frames), 4)            # 256-byte message -> several fragments
         self.assertEqual(eq_frames[-1][2] & 1, 0)             # last fragment: "more" bit clear
