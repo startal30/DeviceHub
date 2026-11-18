@@ -235,32 +235,85 @@ class EstimateTests(unittest.TestCase):
     def setUp(self):
         self.e = estimate.Estimator(os.path.join(tempfile.mkdtemp(), "h.json"))
 
+    def feed(self, key, start_t, start_pct, end_pct, step_s, charging=False, poll=60, settle_drop=0):
+        """Simulate polling every `poll` s while the battery moves 1% every `step_s` s.
+        settle_drop: extra % lost in the first minutes (the reading settling). Returns the end time."""
+        e, t, pct = self.e, start_t, start_pct
+        e.update(key, pct, charging, t)
+        for _ in range(settle_drop):
+            t += poll
+            pct -= 1
+            e.update(key, pct, charging, t)
+        sign = 1 if charging else -1
+        next_step = t + step_s
+        while pct != end_pct:
+            t += poll
+            if t >= next_step:
+                pct += sign
+                next_step += step_s
+            e.update(key, pct, charging, t)
+        return t
+
     def test_no_data_then_measured(self):
-        e, t = self.e, 1000.0
-        e.update("keyboard", 83, False, t)
+        e = self.e
+        e.update("keyboard", 83, False, 1000)
         self.assertEqual(e.estimate("keyboard", 83, False), (None, ""))
-        for i, pct in enumerate([82, 81, 80]):                  # 1% every 2 hours
-            e.update("keyboard", pct, False, t + 3600 + i * 7200)
-        hours, basis = e.estimate("keyboard", 80, False)
-        self.assertAlmostEqual(hours, 160, places=3)
+        self.feed("keyboard", 1060, 83, 77, 1200)            # 1% every 20 min = 3 %/h
+        hours, basis = e.estimate("keyboard", 77, False)
         self.assertEqual(basis, "usage")
+        self.assertAlmostEqual(hours, 77 / 3, delta=0.5)
+
+    def test_settling_drop_is_ignored(self):
+        e = self.e
+        self.feed("headset", 1000, 78, 70, 1200, settle_drop=3)   # 78 -> 75 in 3 min, then 3 %/h
+        self.assertAlmostEqual(e.rates("headset")["used"], 3.0, delta=0.15)
+
+    def test_time_switched_off_does_not_count(self):
+        e = self.e
+        t = self.feed("headset", 1000, 80, 76, 1200)            # 3 %/h while on
+        e.update("headset", 76, False, t + 10 * 3600)            # off for 10 h, same %
+        self.feed("headset", t + 10 * 3600 + 60, 76, 72, 1200)
+        self.assertAlmostEqual(e.rates("headset")["used"], 3.0, delta=0.15)
+
+    def test_recent_pace_counts_more(self):
+        e = self.e
+        t = self.feed("keyboard", 1000, 90, 75, 1800)           # 2 %/h for 7.5 h
+        self.feed("keyboard", t + 60, 75, 65, 450)               # then 8 %/h for 1.25 h
+        r = e.rates("keyboard")
+        self.assertAlmostEqual(r["recent"], 8.0, delta=0.4)
+        self.assertGreater(r["used"], 5.0)                       # follows the new pace...
+        self.assertLess(r["used"], 8.0)                          # ...without jumping all the way
+
+    def test_accuracy_is_checked(self):
+        e = self.e
+        self.feed("keyboard", 1000, 90, 50, 1200)                # steady 3 %/h: predictions are right
+        typical, bias, n = e.accuracy("keyboard", False)
+        self.assertGreaterEqual(n, 3)
+        self.assertLess(typical, 0.1)
+        self.assertIn("typically off by", e.report({"keyboard": "Keyboard"}))
+
+    def test_old_history_is_migrated(self):
+        path = os.path.join(tempfile.mkdtemp(), "h.json")
+        with open(path, "w") as f:
+            json.dump({"headset": {"charging": False, "points": [[1, 78]], "rate_down": 0.85, "rate_up": 20}}, f)
+        e = estimate.Estimator(path)
+        self.assertIsNone(e.data["headset"]["rate_down"])      # measured with off-time: dropped
+        self.assertEqual(e.data["headset"]["rate_up"], 20)
 
     def test_charge_rate_remembered(self):
-        e, t = self.e, 1000.0
-        e.update("mouse", 15, True, t)
-        for i, pct in enumerate(range(16, 26)):                 # 1% every 3 minutes
-            e.update("mouse", pct, True, t + 60 + i * 180)
-        self.assertAlmostEqual(e.estimate("mouse", 25, True)[0], 3.75, places=3)
-        e.update("mouse", 25, False, t + 5000)                 # unplugged: rated life until measured
-        self.assertEqual(e.estimate("mouse", 25, False), (70 * 24 * 0.25, "rated"))
-        e.update("mouse", 24, True, t + 9000)                  # plugged in again: remembered rate
-        self.assertAlmostEqual(e.estimate("mouse", 24, True)[0], 3.8, places=3)
+        e = self.e
+        t = self.feed("mouse", 1000, 15, 45, 180, charging=True, poll=15)   # 20 %/h
+        self.assertAlmostEqual(e.estimate("mouse", 45, True)[0], 55 / 20, delta=0.2)
+        e.update("mouse", 45, False, t + 15)                   # unplugged: rated life until measured
+        self.assertEqual(e.estimate("mouse", 45, False), (70 * 24 * 0.45, "rated"))
+        e.update("mouse", 44, True, t + 4000)                  # plugged in again: remembered rate
+        self.assertAlmostEqual(e.estimate("mouse", 44, True)[0], 56 / 20, delta=0.2)
 
     def test_charged_while_away_restarts_segment(self):
         e = self.e
         e.update("keyboard", 60, False, 1000)
         e.update("keyboard", 70, False, 4600)
-        self.assertEqual(e.data["keyboard"]["points"], [[4600, 70]])
+        self.assertEqual([p[:2] for p in e.data["keyboard"]["points"]], [[4600, 70]])
 
     def test_persists(self):
         self.e.update("headset", 78, False, 1000)

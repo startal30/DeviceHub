@@ -17,9 +17,20 @@ lightning bolt while the device it shows is charging.
 
 **Time left:** no device reports this, so the app measures how fast each battery drains (or charges)
 on your own usage and remembers it across restarts (`%LOCALAPPDATA%\DeviceHub\battery_history.json`).
-It needs two changes in % at least 5 minutes apart. Until then it shows the maker's rating, marked
-"rated" (MX Master 3S: 70 days per charge; PRO X 2: 50 h of use). The keyboard says "Measuring battery
-life…" until it has data, because AULA publishes no rating.
+- Only time the device is **on and answering** counts, so it reads "~8 h **of use** left". Hours the
+  headset is switched off or the keyboard is asleep don't stretch the estimate.
+- The first 10 minutes after a device connects or is plugged in / unplugged are ignored: the reading
+  drops several % quickly there before it settles.
+- It mixes the **pace of the last hour of use** with the long-term rate, so it follows what you're doing
+  now (typing with the lights on drains the keyboard several times faster than idling).
+- Until there's enough data it shows the maker's rating, marked "rated" (MX Master 3S: 70 days per
+  charge; PRO X 2: 50 h of use). The keyboard says "Measuring battery life…", because AULA publishes no rating.
+
+**How accurate is it?** The app checks itself: each time the % changes it remembers its prediction, and
+once the battery has moved another 10% it compares the predicted time with the real one. After 3
+checks the panel shows the typical error, e.g. "~8 h of use left · ±20%". Tray menu → **Battery
+estimate report** (or `DeviceHub.exe --battery-report` from a console) lists every check. No estimate
+can know you're about to start gaming, so it means "at your recent pace".
 
 ## Install / update
 Double-click `build.bat`. It runs the tests, builds the app and installs it to

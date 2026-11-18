@@ -21,7 +21,7 @@ from logging.handlers import RotatingFileHandler
 from PIL import Image, ImageDraw, ImageFont
 
 from devices import aula, aula_lighting, logi_audiofx, logi_headset, logi_mouse, win_mic
-from estimate import Estimator, fmt_duration
+from estimate import RATED_IS_USE_TIME, Estimator, fmt_duration
 import ghub_import
 
 APP_NAME = "DeviceHub"
@@ -449,15 +449,27 @@ class Hub:
             s.time_text = "Fully charged"
             return
         hours, basis = self.est.estimate(c.key, s.battery, s.charging)
+        typical = self.est.accuracy(c.key, s.charging)[0] if basis == "usage" else None
+        acc = f" · ±{max(5, round(typical * 20) * 5)}%" if typical is not None else ""   # nearest 5%
         if s.charging:
-            s.time_text = f"Charging · full in ~{fmt_duration(hours)}" if hours else "Charging"
+            s.time_text = f"Charging · full in ~{fmt_duration(hours)}{acc}" if hours else "Charging"
         elif hours is None:
             s.time_text = "Measuring battery life…"
         elif basis == "rated":
-            use = " of use" if c.key == "headset" else ""
+            use = " of use" if RATED_IS_USE_TIME.get(c.key) else ""
             s.time_text = f"~{fmt_duration(hours)}{use} left · rated"
         else:
-            s.time_text = f"~{fmt_duration(hours)} left"
+            s.time_text = f"~{fmt_duration(hours)} of use left{acc}"
+
+    def battery_report(self):
+        self.jobs.put(("report", None, None, None))
+
+    def _write_report(self):
+        text = self.est.report({c.key: f"{c.kind} · {c.name}" for c in self.ctls})
+        path = os.path.join(os.path.dirname(HISTORY_PATH), "battery_report.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.startfile(path)
 
     def snapshot(self) -> list[DevState]:
         return [copy.deepcopy(c.state) for c in self.ctls]
@@ -490,6 +502,12 @@ class Hub:
             if kind == "refresh":
                 self._poll()
                 next_poll = time.time() + self.poll_interval()
+                continue
+            if kind == "report":
+                try:
+                    self._write_report()
+                except Exception:
+                    log.exception("battery report failed")
                 continue
             ctl = self.by_key[key]
             ctl.state.notice = ""
@@ -987,7 +1005,7 @@ class Panel:
         voice_toggle.pack(side="left")
         voice_list = tk.Frame(micp, bg=C["card"])            # packed under vrow while open
         self._label(micp, "Changing Blue VO!CE or its preset asks Windows for permission.", muted=True,
-                    size=8, anchor="w").pack(fill="x")
+                    size=8, anchor="w", justify="left", wraplength=self.px(280)).pack(fill="x")
         parts.update(vrow=vrow, voice_toggle=voice_toggle, voice_list=voice_list, voice_open=False,
                      voice_btns={}, voice_names=None)
         self._label(micp, "Sidetone (hear your own voice)", muted=True, anchor="w").pack(
@@ -1289,6 +1307,7 @@ class App:
             item("Open", lambda i, it: self.ui_queue.put(("toggle", None)), default=True),
             item("Refresh now", lambda i, it: self.hub.refresh_now()),
             item("Import headset settings from G HUB", lambda i, it: self.hub.import_ghub()),
+            item("Battery estimate report", lambda i, it: self.hub.battery_report()),
             item("Start with Windows", lambda i, it: set_autostart(not autostart_enabled()),
                  checked=lambda it: autostart_enabled()),
             item("Exit", lambda i, it: self.ui_queue.put(("quit", None))),
@@ -1404,11 +1423,22 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--once", action="store_true", help="print every device's battery and settings, then exit")
     ap.add_argument("--tray", action="store_true", help="start in the tray without opening the panel")
+    ap.add_argument("--battery-report", action="store_true",
+                    help="print the battery estimates and how accurate they have been, then exit")
     ap.add_argument("--audiofx", metavar="NAME=VALUE", help=argparse.SUPPRESS)   # elevated helper (UAC)
     args = ap.parse_args()
     if args.audiofx:
         from devices import logi_audiofx
         sys.exit(logi_audiofx.run_helper(args.audiofx))
+    if args.battery_report:                           # read-only: safe while the app is running
+        names = {c.key: f"{c.kind} · {c.name}" for c in (KeyboardCtl, MouseCtl, HeadsetCtl)}
+        text = Estimator(HISTORY_PATH).report(names)
+        try:
+            sys.stdout.reconfigure(errors="replace")
+        except Exception:
+            pass
+        print(text)
+        return
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=[
         RotatingFileHandler(os.path.join(DATA_DIR, "log.txt"), maxBytes=300_000, backupCount=1, encoding="utf-8")])
 
